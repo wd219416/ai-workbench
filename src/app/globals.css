@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0e1014;
+  --color-panel: #161920;
+  --color-panel2: #1d212b;
+  --color-line: #2a2f3b;
+  --color-ink: #e9ebf1;
+  --color-mute: #98a1b3;
+  --color-brand: #d97706;
+  --color-brand2: #b45309;
+  --color-ok: #22c55e;
+  --color-bad: #ef4444;
+  --color-info: #3b82f6;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* { scrollbar-width: thin; scrollbar-color: #2a2f3b transparent; }
+
+.card {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+}
+.input {
+  width: 100%;
+  background: var(--color-panel2);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--color-ink);
+  outline: none;
+}
+.input:focus { border-color: var(--color-brand); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 500;
+  cursor: pointer; border: 1px solid transparent; transition: all .15s;
+  white-space: nowrap;
+}
+.btn-brand { background: var(--color-brand); color: #fff; }
+.btn-brand:hover { background: var(--color-brand2); }
+.btn-ghost { background: var(--color-panel2); border-color: var(--color-line); color: var(--color-ink); }
+.btn-ghost:hover { border-color: var(--color-brand); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+  background: var(--color-panel2); border: 1px solid var(--color-line); color: var(--color-mute);
+}
+.label { font-size: 12px; color: var(--color-mute); margin-bottom: 4px; display: block; }

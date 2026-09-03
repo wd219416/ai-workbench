@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
   startScheduler(); // 确保后台任务轮询兜底在跑
   const body = await req.json();
-  const { engine, refAssetId, refAssetIds, businessLineId, channelId, contentTypeId, promptCn, loraIds } = body;
+  const { engine, refAssetId, refAssetIds, businessLineId, channelId, contentTypeId, promptCn, loraIds, ckpt, comfyLoras } = body;
   const v = validateImage(body);
   if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
   const { prompt, negative, width, height, n } = v.cleaned!;
@@ -33,8 +33,15 @@ export async function POST(req: Request) {
   }
   const refImagePath = refImagePaths[0]; // 可灵/Liblib 等单图引擎取第一张
 
-  const reply = await submitImage(engine, { prompt, negative, width, height, n, refImagePath, refImagePaths, loraIds });
-  const input = { prompt, negative, width, height, n, refAssetId, refAssetIds: refIds, loraIds, businessLineId, channelId, contentTypeId, promptCn };
+  // ComfyUI LoRA 清洗：数组 + name 非空 + weight 收敛到 [-2,2] + 上限 5 个
+  const cl: { name: string; weight: number }[] = Array.isArray(comfyLoras)
+    ? comfyLoras
+        .map((x: any) => ({ name: String(x?.name || "").trim(), weight: Math.max(-2, Math.min(2, Number(x?.weight) || 1)) }))
+        .filter((x) => x.name)
+        .slice(0, 5)
+    : [];
+  const reply = await submitImage(engine, { prompt, negative, width, height, n, refImagePath, refImagePaths, loraIds, ckpt, comfyLoras: cl });
+  const input = { prompt, negative, width, height, n, refAssetId, refAssetIds: refIds, loraIds, ckpt, comfyLoras: cl, businessLineId, channelId, contentTypeId, promptCn };
 
   // 同步引擎（即梦/Seedream）直接出图：立刻落盘入素材库，任务直接 done
   if (reply.status === "done" && reply.images?.length) {

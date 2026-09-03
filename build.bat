@@ -1,11 +1,13 @@
 @echo off
 REM ============================================================
-REM  Build + Deploy standalone output to server\
+REM  Build + Deploy standalone output to runtime\
 REM  Usage: build.bat   (run from project root)
 REM  1) next build (output: standalone)
-REM  2) copy .next\standalone -> server\
-REM  3) copy .next\static -> server\.next\static
+REM  2) copy .next\standalone -> runtime\
+REM  3) copy .next\static -> runtime\.next\static
 REM  4) remove traced data snapshot (real data\ lives at project root)
+REM  ★ 2026-09-03: server\ 改为 runtime\
+REM    （并行会话残留的 rmSync('server') 重放任务会删 server\）
 REM ============================================================
 cd /d "%~dp0"
 
@@ -27,9 +29,9 @@ if not exist ".next\standalone\server.js" (
   exit /b 1
 )
 
-echo [2/4] Deploying to server\ ...
-if exist "server" rmdir /s /q "server"
-xcopy ".next\standalone" "server\" /e /i /q >nul
+echo [2/4] Deploying to runtime\ ...
+if exist "runtime" rmdir /s /q "runtime"
+xcopy ".next\standalone" "runtime\" /e /i /q >nul
 if errorlevel 1 (
   echo [ERROR] Copy standalone failed.
   pause
@@ -37,8 +39,8 @@ if errorlevel 1 (
 )
 
 echo [3/4] Copying static assets...
-if not exist "server\.next" mkdir "server\.next"
-xcopy ".next\static" "server\.next\static\" /e /i /q >nul
+if not exist "runtime\.next" mkdir "runtime\.next"
+xcopy ".next\static" "runtime\.next\static\" /e /i /q >nul
 if errorlevel 1 (
   echo [ERROR] Copy static failed.
   pause
@@ -46,10 +48,10 @@ if errorlevel 1 (
 )
 
 echo [4/5] Removing traced data snapshot (use real data\ at root)...
-if exist "server\data" rmdir /s /q "server\data"
+if exist "runtime\data" rmdir /s /q "runtime\data"
 
 echo [5/5] Patching server.js (WORKBENCH_DATA_DIR fallback)...
-node patch-server.cjs
+node patch-server.cjs runtime
 if errorlevel 1 (
   echo [ERROR] patch-server.cjs failed.
   pause
@@ -57,6 +59,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] Deployed to server\ . Start with start.bat
+echo [OK] Deployed to runtime\ . Start with start.bat
 echo     NOTE: if service is running on 3100, stop it first, then start.bat
 pause

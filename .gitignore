@@ -36,9 +36,11 @@ qa-*.png
 data-backup.zip
 
 # standalone 部署产物（build.bat 生成，55M 构建产物——不提交）
+# 2026-09-03: 部署目录 server/ → runtime/（并行会话残留 rmSync('server') 重放任务会删 server/）
+runtime/
 server/
 
-# 旧 standalone 实验产物（dist/ 方案已废弃，统一用 server/ + build.bat）
+# 旧 standalone 实验产物（dist/ 方案已废弃，统一用 runtime/ + build.bat）
 dist/
 
 # WorkBuddy 本地记忆（机器级，不进仓库）

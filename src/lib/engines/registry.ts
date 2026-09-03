@@ -121,15 +121,15 @@ export const ENGINES: EngineDef[] = [
     display: { video: { name: "即梦(跳转)", keyHint: "网页" } },
     modelField: "jimeng_model",
     models: [
-      { v: "doubao-seedream-5-0-pro", tip: "🔥 旗舰·最新·编辑可控" },
-      { v: "doubao-seedream-4-5-250911", tip: "文生图+图生图+组图" },
-      { v: "doubao-seedream-5-0-lite", tip: "可联网·轻量·热点类" },
-      { v: "doubao-seedream-4-0-250828", tip: "上一代稳定款" },
+      { v: "doubao-seedream-5-0-pro-260628", tip: "🔥 旗舰·最新·编辑可控（已授权，每日免费100张）" },
+      { v: "doubao-seedream-5-0-260128", tip: "Lite·可联网·轻量（需授权）" },
+      { v: "doubao-seedream-4-5-251128", tip: "4.5·多图融合（需授权）" },
+      { v: "doubao-seedream-4-0-250828", tip: "上一代稳定款（需授权）" },
     ],
     fields: [
       { key: "jimeng_key", label: "方舟 API Key" },
       { key: "jimeng_base", label: "Base URL" },
-      { key: "jimeng_model", label: "模型（默认 doubao-seedream-4-0）" },
+      { key: "jimeng_model", label: "模型（默认 doubao-seedream-5-0-pro-260628）" },
     ],
   },
   {
@@ -170,7 +170,8 @@ export const ENGINES: EngineDef[] = [
     fields: [
       { key: "comfyui_local_url", label: "本地地址（默认 http://127.0.0.1:8188）" },
       { key: "comfyui_cloud_url", label: "云端地址（优先于本地）" },
-      { key: "comfyui_workflow", label: "Workflow JSON（ComfyUI Save (API Format)，占位符：{{prompt}}/{{negative}}/{{width}}/{{height}}/{{seed}}/{{n}}）", long: true },
+      { key: "comfyui_ckpt", label: "默认底模文件名（{{ckpt}} 占位符，如 dreamshaper_8.safetensors）" },
+      { key: "comfyui_workflow", label: "Workflow JSON（ComfyUI Save (API Format)，占位符：{{prompt}}/{{negative}}/{{width}}/{{height}}/{{seed}}/{{n}}/{{ckpt}}）", long: true },
     ],
   },
 ];

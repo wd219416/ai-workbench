@@ -202,7 +202,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   liblib_denoise: "0.6",
   jimeng_key: "",
   jimeng_base: "https://ark.cn-beijing.volces.com/api/v3",
-  jimeng_model: "doubao-seedream-4-0-250828",
+  jimeng_model: "doubao-seedream-5-0-pro-260628",
   lovart_ak: "",
   lovart_sk: "",
   lovart_base: "https://lgw.lovart.ai",
@@ -219,7 +219,8 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   vidu_resolution: "720p",
   comfyui_local_url: "http://127.0.0.1:8188",
   comfyui_cloud_url: "",
-  comfyui_workflow: '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}},"steps":20,"cfg":7,"sampler_name":"euler","scheduler":"normal","denoise":1,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"dreamshaper_8.safetensors"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":{{width}},"height":{{height}},"batch_size":{{n}}}},"6":{"class_type":"CLIPTextEncode","inputs":{"text":"{{prompt}}","clip":["4",1]}},"7":{"class_type":"CLIPTextEncode","inputs":{"text":"{{negative}}","clip":["4",1]}},"8":{"class_type":"VAEDecode","inputs":{"samples":["3",0],"vae":["4",2]}},"9":{"class_type":"SaveImage","inputs":{"filename_prefix":"ai-workbench","images":["8",0]}}}',
+  comfyui_ckpt: "dreamshaper_8.safetensors",
+  comfyui_workflow: '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}},"steps":20,"cfg":7,"sampler_name":"euler","scheduler":"normal","denoise":1,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"{{ckpt}}"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":{{width}},"height":{{height}},"batch_size":{{n}}}},"6":{"class_type":"CLIPTextEncode","inputs":{"text":"{{prompt}}","clip":["4",1]}},"7":{"class_type":"CLIPTextEncode","inputs":{"text":"{{negative}}","clip":["4",1]}},"8":{"class_type":"VAEDecode","inputs":{"samples":["3",0],"vae":["4",2]}},"9":{"class_type":"SaveImage","inputs":{"filename_prefix":"ai-workbench","images":["8",0]}}}',
   default_image_engine: "lovart",
   default_video_engine: "kling",
   default_llm: "deepseek",
@@ -387,8 +388,8 @@ const PRICING_SEED: [string, string, number, string, string][] = [
   ["wanxiang", "wanx2.0-t2i-turbo", 0.04, "张", "通义万相 2.0 快速"],
   ["jimeng", "doubao-seedream-4-0-250828", 0.2, "张", "即梦 Seedream 4.0"],
   ["jimeng", "doubao-seedream-4-5-250911", 0.25, "张", "即梦 Seedream 4.5"],
-  ["jimeng", "doubao-seedream-5-0-lite", 0.22, "张", "即梦 Seedream 5.0 lite"],
-  ["jimeng", "doubao-seedream-5-0-pro", 0.3, "张", "即梦 Seedream 5.0 pro 旗舰（标准分辨率）"],
+  ["jimeng", "doubao-seedream-5-0-pro-260628", 0.3, "张", "即梦 Seedream 5.0 pro 旗舰（已授权，当前每日免费100张）"],
+  ["jimeng", "doubao-seedream-5-0-260128", 0.22, "张", "即梦 Seedream 5.0 lite（需授权）"],
   ["vidu", "viduq3-pro", 1.0, "秒", "Vidu Q3 Pro（1080P，×时长）"],
   ["vidu", "viduq3-turbo", 0.5, "秒", "Vidu Q3 Turbo（×时长）"],
   ["deepseek", "deepseek-chat", 2, "百万token", "DeepSeek Chat 输出价；输入约¥1/百万"],
@@ -453,6 +454,8 @@ export function getDb(): DatabaseSync {
   ensureDefaultSettings(_db);
   // 增量迁移：ComfyUI workflow 为空时填充默认 SD1.5 模板
   try { _db.prepare("UPDATE settings SET value=? WHERE key='comfyui_workflow' AND (value='' OR value IS NULL)").run(DEFAULT_SETTINGS.comfyui_workflow); } catch { /* 忽略 */ }
+  // 增量迁移：旧模板把底模写死 dreamshaper_8，改造成 {{ckpt}} 占位符（支持底模切换）
+  try { _db.prepare("UPDATE settings SET value=replace(value,'\"ckpt_name\":\"dreamshaper_8.safetensors\"','\"ckpt_name\":\"{{ckpt}}\"') WHERE key='comfyui_workflow' AND value NOT LIKE '%{{ckpt}}%'").run(); } catch { /* 忽略 */ }
   ensureExtraTemplates(_db);
   ensurePricing(_db);
   g.__wb_db = _db;

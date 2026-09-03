@@ -13,6 +13,8 @@ export interface ImageJob {
   refImagePath?: string;  // 图生图/实景合成的参考图（服务器本地路径，单引擎单图）
   refImagePaths?: string[]; // 多参考图（产品保真多角度，LOVART attachments 全量生效；其余引擎取第一张）
   loraIds?: number[];     // 套用的 Liblib 本地收藏模型 id（仅 Liblib 引擎生效）
+  ckpt?: string;          // ComfyUI 底模文件名（替换 {{ckpt}} 占位符；缺省用设置页 comfyui_ckpt）
+  comfyLoras?: { name: string; weight: number }[]; // ComfyUI 本地 LoRA（文件名 + 权重，仅 ComfyUI 引擎生效）
 }
 
 export interface EngineReply {
@@ -366,6 +368,43 @@ async function submitJimeng(job: ImageJob): Promise<EngineReply> {
   - {{seed}}      随机种子（每次任务随机）
   - {{n}}         生成数量 batch_size（默认 1）
  *  本地默认走 comfyui_local_url；云端走 comfyui_cloud_url；都空则返回 needs_key。 */
+/** 往 ComfyUI workflow 里动态插入 LoRA 节点。
+ *  通用算法：按 class_type 找 CheckpointLoaderSimple，把它的 MODEL/CLIP 输出依次串进 N 个
+ *  LoraLoader 节点，最后把下游节点的 model/clip 输入重连到最后一个 LoRA 的输出。
+ *  对不含 CheckpointLoaderSimple 的 workflow（如 FLUX 的 UNETLoader）安全跳过。 */
+function injectComfyLoras(workflow: Record<string, any>, loras: { name: string; weight: number }[]) {
+  if (!loras?.length) return;
+  const entries = Object.entries(workflow);
+  const ckptEntry = entries.find(([, n]) => n?.class_type === "CheckpointLoaderSimple");
+  if (!ckptEntry) return;
+  const [ckptId] = ckptEntry;
+
+  let nextId = entries.reduce((m, [k]) => Math.max(m, Number(k) || 0), 99) + 1;
+  let modelSrc: [string, number] = [ckptId, 0];
+  let clipSrc: [string, number] = [ckptId, 1];
+  for (const lora of loras) {
+    const id = String(nextId++);
+    workflow[id] = {
+      class_type: "LoraLoader",
+      inputs: {
+        model: [...modelSrc],
+        clip: [...clipSrc],
+        lora_name: lora.name,
+        strength_model: lora.weight,
+        strength_clip: lora.weight,
+      },
+    };
+    modelSrc = [id, 0];
+    clipSrc = [id, 1];
+  }
+  // 重连所有引用 checkpoint MODEL/CLIP 输出的下游节点（KSampler.model / CLIPTextEncode.clip 等）
+  for (const [, node] of entries) {
+    if (!node?.inputs) continue;
+    if (Array.isArray(node.inputs.model) && node.inputs.model[0] === ckptId) node.inputs.model = [...modelSrc];
+    if (Array.isArray(node.inputs.clip) && node.inputs.clip[0] === ckptId) node.inputs.clip = [...clipSrc];
+  }
+}
+
 async function submitComfyUI(job: ImageJob): Promise<EngineReply> {
   const localUrl = getSetting("comfyui_local_url");
   const cloudUrl = getSetting("comfyui_cloud_url");
@@ -380,17 +419,20 @@ async function submitComfyUI(job: ImageJob): Promise<EngineReply> {
   const w = job.width || 768;
   const h = job.height || 768;
   const n = Math.min(job.n || 1, 4);
+  const ckpt = esc(job.ckpt || getSetting("comfyui_ckpt") || "");
   const wfJson = wfTpl
     .replaceAll("{{width}}", String(w))
     .replaceAll("{{height}}", String(h))
     .replaceAll("{{seed}}", String(seed))
     .replaceAll("{{n}}", String(n))
+    .replaceAll("{{ckpt}}", ckpt)
     .replaceAll("{{prompt}}", esc(job.prompt || ""))
     .replaceAll("{{negative}}", esc(job.negative || ""));
-  let workflow: unknown;
+  let workflow: Record<string, any>;
   try { workflow = JSON.parse(wfJson); } catch (e) {
     return { ok: false, engine: "comfyui", status: "error", message: `workflow JSON 解析失败（占位符替换后）：${(e as Error).message.slice(0, 160)}` };
   }
+  injectComfyLoras(workflow, job.comfyLoras || []);
 
   try {
     const res = await fetch(`${url.replace(/\/$/, "")}/prompt`, {

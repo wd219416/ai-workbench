@@ -132,6 +132,9 @@ export default function StudioPage() {
   const [pricing, setPricing] = useState<{ engine: string; model: string; unit_price: number; unit: string; discount_pct: number; discount_until: string | null }[]>([]);
   const [loras, setLoras] = useState<{ id: number; name: string; weight: number; license: string }[]>([]);
   const [selectedLoras, setSelectedLoras] = useState<number[]>([]);
+  const [comfyModels, setComfyModels] = useState<{ checkpoints: string[]; loras: string[] } | null>(null);
+  const [comfyCkpt, setComfyCkpt] = useState("");
+  const [comfySelLoras, setComfySelLoras] = useState<Record<string, number>>({}); // LoRA 文件名 -> 权重
   const pasteRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -144,6 +147,17 @@ export default function StudioPage() {
       if (Array.isArray(d)) setLoras(d.map((m: { id: number; name: string; weight: number; license: string }) => ({ id: m.id, name: m.name, weight: m.weight, license: m.license })));
     });
   }, []);
+
+  // ComfyUI 引擎：拉取本地可用底模与 LoRA 列表（服务端代理，前端不直连 8188）
+  useEffect(() => {
+    if (engine !== "comfyui") return;
+    fetch("/api/comfyui/models").then((r) => r.ok && r.json()).then((d) => {
+      if (Array.isArray(d?.checkpoints)) {
+        setComfyModels({ checkpoints: d.checkpoints, loras: d.loras || [] });
+        setComfyCkpt((prev) => (prev && d.checkpoints.includes(prev) ? prev : d.checkpoints[0] || ""));
+      }
+    }).catch(() => setComfyModels(null));
+  }, [engine]);
 
   // 当前引擎的预估消耗（取该引擎最低价；多模型显示"起"）
   const costInfo = (() => {
@@ -277,6 +291,10 @@ export default function StudioPage() {
         refAssetId: refImgs[0]?.assetId, refAssetIds: refImgs.length ? refImgs.map((r) => r.assetId) : undefined,
         businessLineId: line, channelId, contentTypeId: typeId, promptCn: editCn,
         loraIds: engine === "liblib" && selectedLoras.length ? selectedLoras : undefined,
+        ckpt: engine === "comfyui" ? comfyCkpt || undefined : undefined,
+        comfyLoras: engine === "comfyui" && Object.keys(comfySelLoras).length
+          ? Object.entries(comfySelLoras).map(([name, weight]) => ({ name, weight }))
+          : undefined,
       }),
     });
     setBusy("");
@@ -407,6 +425,54 @@ export default function StudioPage() {
                 <span className="text-[11px] text-mute">ChatGPT / Codex 通道（复制后到网页版或桌面版粘贴）</span>
                 <button className="tag cursor-pointer hover:border-brand" onClick={() => copy(prompt.semiAuto!)}>复制指令</button>
               </div>
+            </div>
+          )}
+          {engine === "comfyui" && comfyModels && (
+            <div className="border border-line rounded-lg p-2">
+              <div className="flex items-center gap-2 mb-1">
+                <label className="label mb-0!">底模</label>
+                <select className="input w-64!" value={comfyCkpt} onChange={(e) => setComfyCkpt(e.target.value)}>
+                  {comfyModels.checkpoints.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <span className="text-[11px] text-mute">本地 LoRA（可多选，最多 5 个；文件放 Models/loras/ 目录后自动出现）</span>
+              {comfyModels.loras.length > 0 ? (
+                <>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {comfyModels.loras.map((l) => {
+                      const on = l in comfySelLoras;
+                      return (
+                        <button key={l}
+                          onClick={() => setComfySelLoras((prev) => {
+                            const n = { ...prev };
+                            if (on) delete n[l];
+                            else if (Object.keys(n).length < 5) n[l] = 1;
+                            return n;
+                          })}
+                          className={`tag cursor-pointer px-2! py-1! ${on ? "border-brand text-brand" : ""}`}>
+                          {l}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {Object.keys(comfySelLoras).length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {Object.entries(comfySelLoras).map(([name, weight]) => (
+                        <div key={name} className="flex items-center gap-2 text-[12px]">
+                          <span className="truncate max-w-[220px]" title={name}>{name}</span>
+                          <span className="text-mute">权重</span>
+                          <input type="number" step="0.1" min="-2" max="2" value={weight}
+                            onChange={(e) => setComfySelLoras((p) => ({ ...p, [name]: Number(e.target.value) }))}
+                            className="input w-16! py-0.5!" />
+                          <button className="tag cursor-pointer px-1.5! py-0.5!" onClick={() => setComfySelLoras((p) => { const n = { ...p }; delete n[name]; return n; })}>移除</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[11px] text-mute mt-1">本地暂无 LoRA 文件（Models/loras/ 目录为空）</div>
+              )}
             </div>
           )}
           {engine === "liblib" && loras.length > 0 && (

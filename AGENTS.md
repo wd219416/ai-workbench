@@ -8,9 +8,9 @@
 **典致 AI 内容创作工作台**（ai-workbench）—— 为陕西典致广告有限公司（实木花盆电商 + 广告设计）搭建的局域网 AI 内容生产平台。
 
 核心能力：
-- **提示词生成**：大白话需求 → 中英双语提示词（DeepSeek 驱动）
-- **AI 出图**：LOVART / 可灵 / 通义万相 / 即梦 Seedream 四引擎
-- **AI 出视频**：可灵 / Vidu 视频引擎
+- **提示词生成**：大白话需求 → 中英双语提示词（DeepSeek 驱动，支持官方 API / 火山方舟双通道）
+- **AI 出图**：LOVART / 可灵 / 通义万相 / 即梦 Seedream / LiblibAI / Liblib ComfyUI / 本地 ComfyUI 七引擎
+- **AI 出视频**：可灵 / Vidu / LOVART 视频引擎
 - **提示词反推**：上传参考图 → 反推提示词（千问 VL / DeepSeek）
 - **品牌客服**：客户咨询登记 → AI 起草回复（知识库上下文）
 - **计费表**：引擎单价 / 限时折扣管理 + 出图/视频前成本预估
@@ -64,8 +64,8 @@ src/
 │   │   └── tasks/          # 任务列表
 │   ├── api/
 │   │   ├── auth/           # login / logout / me（cookie session + HMAC token）
-│   │   ├── image/generate  # 出图（LOVART/可灵/万相/即梦）
-│   │   ├── video/generate  # 视频（可灵/Vidu）
+│   │   ├── image/generate  # 出图（LOVART/可灵/万相/即梦/Liblib/LiblibComfy/本地ComfyUI）
+│   │   ├── video/generate  # 视频（可灵/Vidu/LOVART）
 │   │   ├── prompt/         # generate / optimize / reverse
 │   │   ├── pricing/        # GET（列表/单查+effectivePrice）/ PUT（admin 改）
 │   │   ├── service/        # 品牌客服 CRUD + AI 回复
@@ -80,12 +80,14 @@ src/
 │   ├── db.ts               # ★ 数据库：schema + 迁移 + settings get/set + seed
 │   ├── crypto-field.ts     # ★ AES-256-GCM 字段加密（敏感 KEY 自动加解密）
 │   ├── auth.ts             # cookie session（HMAC 签名 token，30 天有效）
-│   ├── llm.ts              # DeepSeek 对话 + 品牌客服回复 + 提示词生成
+│   ├── llm.ts              # ★ LLM 统一出口：llmConf()（官方/方舟双通道+自动回退）+ 提示词生成 + 客服回复 + 脚本/质检/卖点
+│   ├── video-reverse.ts    # 视频反推脚本整合（同样走 llmConf）
 │   ├── pricing.ts          # effectivePrice 计算（折扣公式）
 │   ├── persist.ts          # 持久化辅助
 │   ├── scheduler.ts        # 任务轮询调度
 │   └── engines/
-│       ├── image.ts        # 出图适配器（LOVART/可灵/万相/即梦）
+│       ├── registry.ts     # ★ 引擎注册表（单一真相源）：EngineDef 分组/字段/模型预设 → 派生 settings 页 + AppShell meta
+│       ├── image.ts        # 出图适配器（LOVART/可灵/万相/即梦/Liblib/LiblibComfy/本地ComfyUI，submitXxx+pollXxx）
 │       ├── video.ts        # 视频适配器（可灵/Vidu）
 │       └── kling-auth.ts   # 可灵统一鉴权（新版单 Key / 旧版 ak/sk JWT）
 └── data/                   # 运行时数据（已 gitignore）
@@ -122,14 +124,22 @@ src/
 
 ### 添加新引擎（出图或视频）
 
-1. `db.ts` 的 `SCHEMA` 加默认配置（base/key/model）+ 迁移 UPDATE
+1. `db.ts` 的 `DEFAULT_SETTINGS` 加默认配置（base/key/model）+ 迁移 UPDATE
 2. `PRICING_SEED` 加价格行
-3. `engines/image.ts`（或 `video.ts`）加适配函数：`submitXxx`（提交）+ `pollXxx`（轮询）+ `extractXxx`（提结果）
-4. `/api/settings/test` 加连通性测试 case
-5. `AppShell.tsx` 的 `meta.imageEngines`/`videoEngines` 加引擎元数据
-6. `settings/page.tsx` 加配置字段（KEY + 模型 datalist）
+3. `engines/registry.ts` 的 `ENGINES` 加一条 `EngineDef`（code/name/kinds/groupName/fields + models 预设）——**settings 页和 AppShell 的引擎列表/字段/模型 datalist 全部从 registry 派生，不用再改 AppShell.tsx**
+4. `engines/image.ts`（或 `video.ts`）加适配函数：`submitXxx`（提交）+ `pollXxx`（轮询），并在 `submitImage`/`pollImage` 的 switch 加 case
+5. `/api/settings/test` 加连通性测试 case
 
-参考实现：LOVART 适配器（`image.ts` 的 `lovartConf`/`lovartSign`/`lovartApi`/`submitLovart`/`pollLovart`）是最完整的范例。
+参考实现：LOVART 适配器（`image.ts` 的 `lovartConf`/`lovartSign`/`lovartApi`/`submitLovart`/`pollLovart`）是最完整的范例；Liblib ComfyUI（`submitLiblibComfy`/`pollLiblibComfy`）展示了复用同组双 KEY + 占位符模板 + 轮询双保险（comfy/status 优先、webui/status 回退）的范式。
+
+### LLM 通道（DeepSeek 官方 / 火山方舟双通道）
+
+- `llm.ts` 的 `llmConf()` 是唯一 LLM 出口：按 `deepseek_provider`（official/ark）返回 key/base/model
+  - **ark 通道**：复用 `jimeng_key`（方舟 KEY），base `https://ark.cn-beijing.volces.com/api/v3`，模型 `deepseek_ark_model`（DeepSeek-V4-Flash 默认 / V4-Pro，各送 50 万 tokens）
+  - **official 通道**：`deepseek_key` + `deepseek_base` + `deepseek_model`
+- `deepseekChat` 内置回退：ark 失败且官方 KEY 存在时自动切官方通道重试（双保险）
+- 所有 LLM 消费方（提示词生成/优化、客服回复、带货脚本、判官团质检、卖点提炼、视频反推整合）统一走 `llmConf()`，**不要直接读 `deepseek_key`**
+- 方舟连通性测试注意：`/models` 接口返回 400 不可用，须用 chat/completions 发 1-token 真实请求探测
 
 ### 计费
 

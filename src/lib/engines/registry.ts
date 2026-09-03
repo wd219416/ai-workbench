@@ -70,6 +70,8 @@ export const ENGINES: EngineDef[] = [
       { key: "deepseek_key", label: "API Key" },
       { key: "deepseek_base", label: "Base URL" },
       { key: "deepseek_model", label: "模型" },
+      { key: "deepseek_provider", label: "通道（official=官方直连 / ark=火山方舟·复用方舟KEY·免费额度优先）" },
+      { key: "deepseek_ark_model", label: "方舟模型（provider=ark 时生效，默认 Flash）" },
     ],
   },
   {
@@ -216,6 +218,11 @@ for (const e of ENGINES) {
 }
 // LOVART 出图/视频是同一引擎下的两个独立模型字段，视频字段单独注册预设
 MODEL_PRESETS["lovart_video_model"] = LOVART_VIDEO_MODELS;
+// 方舟 DeepSeek 通道的模型预设（复用方舟 KEY，2026-09-03 王哥已授权 V4 Pro/Flash）
+MODEL_PRESETS["deepseek_ark_model"] = [
+  { v: "deepseek-v4-flash-ga-260731", tip: "🔥 Flash·快+省（默认）·输出¥9/百万·送50万tokens" },
+  { v: "deepseek-v4-pro-ga-260813", tip: "Pro·深度推理·复杂脚本/质检·输出¥27/百万·送50万tokens" },
+];
 
 /** 设置页分组（含"默认引擎"伪分组） */
 export interface SettingsGroup {

@@ -30,6 +30,28 @@ export async function POST(req: Request) {
   const g = raw.group;
   switch (g) {
     case "deepseek": {
+      const provider = val("deepseek_provider") || "official";
+      if (provider === "ark") {
+        // 方舟通道：OpenAI 兼容 chat/completions（/models 在方舟返回 400，不能用来探测）
+        const key = val("jimeng_key");
+        if (!key) return NextResponse.json({ ok: false, message: "方舟通道复用方舟 KEY，请先在「即梦 Seedream」分组填 jimeng_key" });
+        const model = val("deepseek_ark_model") || "deepseek-v4-flash-ga-260731";
+        try {
+          const res = await fetch("https://ark.cn-beijing.volces.com/api/v3/chat/completions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+            body: JSON.stringify({ model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (res.ok) return NextResponse.json({ ok: true, message: `连通正常，方舟 ${model} 可调用（真实消耗 1 token）` });
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 401 || res.status === 403) return NextResponse.json({ ok: false, message: `方舟可达，但鉴权失败（HTTP ${res.status}），请检查方舟 KEY` });
+          if (res.status === 404) return NextResponse.json({ ok: false, message: `方舟可达，但模型未开通（HTTP 404）——到方舟控制台「开通管理」授权 ${model}` });
+          return NextResponse.json({ ok: false, message: `方舟可达，HTTP ${res.status} ${String(data?.error?.message || data?.message || "").slice(0, 80)}` });
+        } catch (e) {
+          return NextResponse.json({ ok: false, message: `连不通：${e instanceof Error ? e.message.slice(0, 100) : String(e)}` });
+        }
+      }
       const key = val("deepseek_key");
       if (!key) return NextResponse.json({ ok: false, message: "未填写 API Key" });
       const base = val("deepseek_base") || "https://api.deepseek.com";

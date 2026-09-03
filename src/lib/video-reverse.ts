@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import { getSetting, uploadDir } from "./db";
+import { llmConf } from "./llm";
 import { dataDir } from "./paths";
 
 const execFileAsync = promisify(execFile);
@@ -208,9 +209,7 @@ async function analyzeFrames(framePaths: string[]): Promise<string> {
 async function composeScript(frameDesc: string, transcript: string, platform: string): Promise<{
   videoPrompt: string; title: string; script: string; sellingPoints: string[];
 }> {
-  const key = getSetting("deepseek_key");
-  const base = getSetting("deepseek_base") || "https://api.deepseek.com";
-  const model = getSetting("deepseek_model") || "deepseek-chat";
+  const { key, base, model } = llmConf();
   const SYS = `你是资深短视频拆解与策划专家，服务实木花盆/花盆支架电商（淘宝/抖店/拼多多/视频号/小红书）与广告设计。
 根据一段视频的「画面分析」和「口播原文」，反推出可直接复用的内容。
 严格按以下 JSON 输出，不要输出其他内容：
@@ -331,7 +330,7 @@ async function runPipeline(src: string, dir: string, platform?: string): Promise
 
   const notes: string[] = [];
   if (!getSetting("qwen_key")) notes.push("未配置百炼 Qwen-VL key，无法理解画面与听口播。");
-  if (!getSetting("deepseek_key")) notes.push("未配置 DeepSeek key，无法整合脚本。");
+  if (!llmConf().key) notes.push("未配置 DeepSeek key，无法整合脚本。");
   if (!transcript && getSetting("qwen_key")) notes.push("未识别到口播（视频可能无语音或 ASR 未命中）。");
   if (frameDescFailed) notes.push("画面分析失败。");
   if (composeNote) notes.push(composeNote);

@@ -24,10 +24,29 @@ const SYS = `你是资深电商视觉与广告工程提示词专家，服务两�
 严格按以下 JSON 格式输出，不要输出其他内容：
 {"cn":"中文提示词","en":"English prompt","negative":"负面提示词"}`;
 
-async function deepseekChat(messages: { role: string; content: string }[], json = true): Promise<string> {
-  const key = getSetting("deepseek_key");
-  const base = getSetting("deepseek_base") || "https://api.deepseek.com";
-  const model = getSetting("deepseek_model") || "deepseek-chat";
+/** LLM 通道配置统一出口（2026-09-03 加方舟通道）
+ *  deepseek_provider=official：官方 DeepSeek（deepseek_key/base/model）
+ *  deepseek_provider=ark：火山方舟（复用 jimeng_key 方舟 KEY，模型 deepseek_ark_model，
+ *    默认 deepseek-v4-flash-ga-260731——方舟 OpenAI 兼容接口，各送 50 万免费 tokens） */
+export function llmConf(): { key: string; base: string; model: string; provider: string } {
+  const provider = getSetting("deepseek_provider") || "official";
+  if (provider === "ark") {
+    return {
+      provider,
+      key: getSetting("jimeng_key") || "",
+      base: "https://ark.cn-beijing.volces.com/api/v3",
+      model: getSetting("deepseek_ark_model") || "deepseek-v4-flash-ga-260731",
+    };
+  }
+  return {
+    provider,
+    key: getSetting("deepseek_key") || "",
+    base: getSetting("deepseek_base") || "https://api.deepseek.com",
+    model: getSetting("deepseek_model") || "deepseek-chat",
+  };
+}
+
+async function chatOnce(key: string, base: string, model: string, messages: { role: string; content: string }[], json: boolean): Promise<string> {
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -36,6 +55,21 @@ async function deepseekChat(messages: { role: string; content: string }[], json 
   if (!res.ok) throw new Error(`DeepSeek ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content ?? "";
+}
+
+async function deepseekChat(messages: { role: string; content: string }[], json = true): Promise<string> {
+  const c = llmConf();
+  try {
+    return await chatOnce(c.key, c.base, c.model, messages, json);
+  } catch (e) {
+    // 方舟通道失败时，若配了官方 KEY 则回退官方通道一次（避免方舟故障期 LLM 全瘫）
+    const fbKey = getSetting("deepseek_key");
+    if (c.provider === "ark" && fbKey) {
+      const fbModel = getSetting("deepseek_model") || "deepseek-chat";
+      return chatOnce(fbKey, getSetting("deepseek_base") || "https://api.deepseek.com", fbModel, messages, json);
+    }
+    throw e;
+  }
 }
 
 function fillTemplate(tpl: string, form: PromptForm, productEn: string): string {
@@ -72,7 +106,7 @@ export async function generatePrompt(
   form: PromptForm,
   tpl?: { template: string; template_en: string; negative: string }
 ): Promise<PromptResult> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   if (!key) return localCompose(form, tpl);
   try {
     const userMsg = `业务线：${form.businessLine}\n渠道/项目：${form.channel}\n内容类型：${form.contentType}\n产品/主体：${form.product || "无"}\n风格：${form.style || "默认"}\n尺寸：${form.sizeText || "默认"}\n具体要求：${form.requirement}\n知识库参考：${form.kbContext || "无"}\n参考模板：${tpl ? tpl.template : "无"}`;
@@ -95,7 +129,7 @@ export async function generatePrompt(
 }
 
 export async function optimizePrompt(cn: string, en: string, direction: string): Promise<PromptResult> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   if (!key) {
     return {
       cn: cn + "，" + direction, en: en + ", " + direction,
@@ -166,7 +200,7 @@ const SERVICE_SYS = `你是「陕西典致」的客服专员，公司两项业�
 
 /** 品牌客服：结合知识库起草回复。无 DeepSeek key 时给本地兜底模板 */
 export async function serviceReply(question: string, kbContext: string): Promise<{ reply: string; source: string; note?: string }> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   if (!key) {
     return {
       reply: `亲，您好！收到您关于「${question.slice(0, 30)}」的咨询。我们的产品均为实木手工制作，具体材质、尺寸和报价我整理后第一时间发您；方便的话可以留个联系方式或加微信，给您发实物图和报价单～`,
@@ -228,7 +262,7 @@ const CLIPFORGE_SYS = `你是资深电商带货短视频策划，服务实木花
 脚本要求：含分镜（画面+运镜）、口播文案、字幕要点、BGM建议；时长控制在约 N 秒。`;
 
 export async function generateClipforge(input: ClipforgeInput): Promise<ClipforgeResult> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   const platform = PLATFORM_STYLE[input.platform] || "通用";
   const stype = SCRIPT_TYPE[input.scriptType] || "场景";
 
@@ -291,7 +325,7 @@ const REVIEW_SYS = `你是短视频脚本评审团，由 5 位评审组成，各
 role 固定依次为：节奏官、口播官、创意官、结构官、画面官；verdict 只能是 硬伤/应改/品味 三者之一；score 为 1-10 整数。`;
 
 export async function reviewScript(script: string, context: string): Promise<ReviewResult> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   if (!key) {
     return {
       items: [
@@ -398,7 +432,7 @@ function localSelling(input: SellingInput): SellingResult {
 }
 
 export async function generateSellingPoints(input: SellingInput): Promise<SellingResult> {
-  const key = getSetting("deepseek_key");
+  const key = llmConf().key;
   if (!key) return localSelling(input);
   try {
     const userMsg = `商品：${input.product}\n目标平台：${input.platform || "通用"}\n目标人群：${input.audience || "未指定，请按通用人群"}\n已有卖点：${input.hasExistingPoints || "无"}`;

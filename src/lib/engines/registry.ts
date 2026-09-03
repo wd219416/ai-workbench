@@ -116,6 +116,15 @@ export const ENGINES: EngineDef[] = [
     ],
   },
   {
+    code: "liblibcomfy", name: "Liblib ComfyUI", keyHint: "复用Liblib双KEY", kinds: ["image"],
+    groupName: "Liblib ComfyUI（云端工作流 · 复用 LiblibAI 双KEY）",
+    fields: [
+      { key: "liblibcomfy_template", label: "templateUuid（Liblib 应用详情页 API 配置里复制）" },
+      { key: "liblibcomfy_steps", label: "默认采样步数（{{steps}} 占位符，默认 20）" },
+      { key: "liblibcomfy_workflow", label: "工作流 API 配置 JSON（占位符：{{prompt}}/{{negative}}/{{width}}/{{height}}/{{seed}}/{{steps}}/{{n}}/{{img_url}}，{{img_url}} 配合参考图用）", long: true },
+    ],
+  },
+  {
     code: "jimeng", name: "即梦", keyHint: "方舟KEY", kinds: ["image", "video"],
     groupName: "即梦 Seedream（出图 · 火山方舟）",
     display: { video: { name: "即梦(跳转)", keyHint: "网页" } },
@@ -178,7 +187,7 @@ export const ENGINES: EngineDef[] = [
 
 /** 引擎下拉列表的展示顺序（保持与历史 UI 一致） */
 const KIND_ORDER: Partial<Record<EngineKind, string[]>> = {
-  image: ["lovart", "kling", "wanxiang", "jimeng", "liblib", "comfyui"],
+  image: ["lovart", "kling", "wanxiang", "jimeng", "liblib", "liblibcomfy", "comfyui"],
   video: ["kling", "lovart", "vidu", "jimeng"],
 };
 

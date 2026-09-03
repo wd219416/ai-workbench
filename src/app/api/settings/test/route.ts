@@ -75,6 +75,35 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, message: `连不通：${e instanceof Error ? e.message.slice(0, 100) : String(e)}` });
       }
     }
+    case "liblibcomfy": {
+      // 复用 LiblibAI 双 KEY；用 comfyui/app 端点验证签名（空 body → 业务码报参数错即鉴权通过）
+      const ak = val("liblib_ak"), sk = val("liblib_sk");
+      if (!ak || !sk) return NextResponse.json({ ok: false, message: "未填写双 KEY（本引擎复用 LiblibAI 分组的 AccessKey/SecretKey）" });
+      const base = (val("liblib_base") || "https://openapi.liblibai.cloud").replace(/\/$/, "");
+      const path = "/api/generate/comfyui/app";
+      const ts = String(Date.now());
+      const nonce = crypto.randomUUID().replaceAll("-", "");
+      const sig = crypto.createHmac("sha1", sk).update(`${path}&${ts}&${nonce}`).digest("base64url");
+      const q = new URLSearchParams({ AccessKey: ak, Signature: sig, Timestamp: ts, SignatureNonce: nonce }).toString();
+      try {
+        const res = await fetch(`${base}${path}?${q}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: "{}", signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 || res.status === 403 || data?.code === 401 || data?.code === 403) {
+          return NextResponse.json({ ok: false, message: `服务可达，但鉴权失败（HTTP ${res.status} code=${data?.code}），请检查双 KEY` });
+        }
+        if (res.ok) {
+          const tpl = val("liblibcomfy_template");
+          const extra = tpl ? "；templateUuid 已填，可直接出图" : "；⚠️ templateUuid 未填——工作流需先在 Liblib「发布为 AI 应用」并复制 API 配置";
+          return NextResponse.json({ ok: true, message: `连通正常，双KEY签名鉴权通过${extra}` });
+        }
+        return NextResponse.json({ ok: false, message: `服务可达，HTTP ${res.status} ${String(data?.msg || data?.message || "").slice(0, 60)}` });
+      } catch (e) {
+        return NextResponse.json({ ok: false, message: `连不通：${e instanceof Error ? e.message.slice(0, 100) : String(e)}` });
+      }
+    }
     case "jimeng": {
       const key = val("jimeng_key");
       if (!key) return NextResponse.json({ ok: false, message: "未填写方舟 API Key" });

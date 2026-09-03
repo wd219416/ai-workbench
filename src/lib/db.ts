@@ -200,6 +200,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   liblib_template: "e10adc3949ba59abbe56e057f20f883e",
   liblib_i2i_template: "9c7d531dc75f476aa833b3d452b8f7ad",
   liblib_denoise: "0.6",
+  // Liblib ComfyUI 云端工作流（复用上面 liblib 双KEY；templateUuid/工作流 JSON 从 Liblib 应用详情页复制）
+  liblibcomfy_template: "",
+  liblibcomfy_steps: "20",
+  liblibcomfy_workflow: '{"workflowUuid":"","3":{"class_type":"KSampler","inputs":{"seed":{{seed}},"steps":{{steps}},"cfg":7}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"底模Liblib模型UUID"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":{{width}},"height":{{height}},"batch_size":{{n}}}},"19":{"class_type":"JjkText","inputs":{"text":"{{prompt}}"}}}',
   jimeng_key: "",
   jimeng_base: "https://ark.cn-beijing.volces.com/api/v3",
   jimeng_model: "doubao-seedream-5-0-pro-260628",
@@ -384,6 +388,7 @@ const PRICING_SEED: [string, string, number, string, string][] = [
   ["wanxiang", "wanx2.1-t2i-turbo", 0.14, "张", "通义万相 2.1 快速"],
   ["wanxiang", "wanx2.1-imageedit", 0.2, "张", "通义万相 2.1 图像编辑（产品保真，参考价）"],
   ["liblib", "default", 0.15, "张", "LiblibAI 聚合出图（按算力点，参考价，以平台为准）"],
+  ["liblibcomfy", "default", 0.2, "张", "Liblib ComfyUI 云端工作流（API 积分计费，新用户送500试用积分/7天，参考价）"],
   ["wanxiang", "wanx2.1-t2i-plus", 0.2, "张", "通义万相 2.1 高质量"],
   ["wanxiang", "wanx2.0-t2i-turbo", 0.04, "张", "通义万相 2.0 快速"],
   ["jimeng", "doubao-seedream-4-0-250828", 0.2, "张", "即梦 Seedream 4.0"],

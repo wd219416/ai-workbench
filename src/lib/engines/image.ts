@@ -321,6 +321,119 @@ export async function pollLiblib(uuid: string): Promise<{ status: string; images
   }
 }
 
+/** Liblib ComfyUI 云端工作流（开放平台「发布 AI 应用」路径，2026-09-03 预建）
+ *  与 webui 路径的差异：POST /api/generate/comfyui/app，generateParams 是「节点 ID 为键」
+ *  的 Liblib 变体 API JSON——工作流必须先在 Liblib「发布为 AI 应用」拿 templateUuid/workflowUuid，
+ *  模型引用为 Liblib 站内模型 UUID（与本地 ComfyUI 工作流 JSON 不互通，需人工替换后录入）。
+ *  鉴权与 webui 完全一致：复用 liblib 双 KEY（liblibConf/liblibSign），无需重复配置。
+ *  占位符：{{prompt}} {{negative}} {{width}} {{height}} {{seed}} {{steps}} {{n}} {{img_url}}
+ *  - {{img_url}} 需配合参考图：先上传 Liblib OSS 拿公网 URL（LoadImage 节点用），再替换
+ *  - 工作流 JSON 支持两种粘贴格式：整段 API 配置（含 templateUuid/generateParams 外壳）或裸 generateParams
+ *  轮询：comfyui/app 任务实测可用 webui/status 查询（astrbot 插件验证过响应结构一致：
+ *  generateStatus 2=处理中 5=成功 6/7=失败，图在 data.images[].imageUrl）；
+ *  这里优先官方 comfy/status 端点，异常/结构不符自动回退 webui/status。 */
+async function submitLiblibComfy(job: ImageJob): Promise<EngineReply> {
+  const { ak, sk, base } = liblibConf();
+  if (!ak || !sk) return { ok: false, engine: "liblibcomfy", status: "needs_key", message: "未配置 LiblibAI 双KEY（本引擎复用 LiblibAI 分组的 AccessKey/SecretKey，请到上面填写）" };
+  const templateUuid = getSetting("liblibcomfy_template");
+  const wfTpl = getSetting("liblibcomfy_workflow");
+  if (!templateUuid) return { ok: false, engine: "liblibcomfy", status: "needs_key", message: "未填写 templateUuid——工作流在 Liblib「发布为 AI 应用」后，从应用详情页的 API 配置 JSON 里复制" };
+  if (!wfTpl) return { ok: false, engine: "liblibcomfy", status: "needs_key", message: "未填写工作流 API 配置 JSON（Liblib 应用详情页复制，把提示词/尺寸等值改成占位符：{{prompt}}/{{width}}/{{height}}/{{seed}}/{{steps}}/{{n}}/{{img_url}}）" };
+
+  const esc = (s: string) => JSON.stringify(s).slice(1, -1);
+  const seed = Math.floor(Math.random() * 2147483647);
+  const steps = parseInt(getSetting("liblibcomfy_steps") || "20", 10) || 20;
+
+  // {{img_url}}：参考图先上传 Liblib OSS 拿公网 URL（模板含占位符但没图 → 提前报错）
+  let imgUrl = "";
+  if (wfTpl.includes("{{img_url}}")) {
+    const refPath = job.refImagePaths?.length ? job.refImagePaths[0] : job.refImagePath;
+    if (refPath && fs.existsSync(refPath)) {
+      try { imgUrl = await liblibUpload(refPath); } catch (e) {
+        return { ok: false, engine: "liblibcomfy", status: "error", message: `参考图上传失败：${(e as Error).message.slice(0, 140)}` };
+      }
+    }
+    if (!imgUrl) return { ok: false, engine: "liblibcomfy", status: "error", message: "工作流含 {{img_url}} 占位符（LoadImage 节点）但本次未提供参考图" };
+  }
+
+  const wfJson = wfTpl
+    .replaceAll("{{width}}", String(job.width || 1024))
+    .replaceAll("{{height}}", String(job.height || 1024))
+    .replaceAll("{{seed}}", String(seed))
+    .replaceAll("{{steps}}", String(steps))
+    .replaceAll("{{n}}", String(Math.min(job.n || 1, 4)))
+    .replaceAll("{{prompt}}", esc(job.prompt || ""))
+    .replaceAll("{{negative}}", esc(job.negative || ""))
+    .replaceAll("{{img_url}}", esc(imgUrl));
+  let parsed: Record<string, any>;
+  try { parsed = JSON.parse(wfJson); } catch (e) {
+    return { ok: false, engine: "liblibcomfy", status: "error", message: `工作流 JSON 解析失败（占位符替换后）：${(e as Error).message.slice(0, 160)}` };
+  }
+
+  // 兼容两种粘贴格式：整段 API 配置（含 templateUuid/generateParams 外壳）/ 裸 generateParams（含可选 workflowUuid）
+  let reqBody: Record<string, unknown>;
+  if (parsed?.templateUuid && parsed?.generateParams && typeof parsed.generateParams === "object") {
+    reqBody = { templateUuid: parsed.templateUuid, generateParams: parsed.generateParams };
+  } else {
+    const { workflowUuid, ...nodes } = parsed;
+    reqBody = { templateUuid, generateParams: { ...(workflowUuid ? { workflowUuid: String(workflowUuid) } : {}), ...nodes } };
+  }
+
+  const path = "/api/generate/comfyui/app";
+  const q = new URLSearchParams(liblibSign(path, ak, sk)).toString();
+  try {
+    const res = await fetch(`${base}${path}?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(reqBody),
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json().catch(() => ({}));
+    const code = data?.code;
+    if (!res.ok || (code !== undefined && code !== 0)) {
+      return { ok: false, engine: "liblibcomfy", status: "error", message: `Liblib ComfyUI ${res.status} code=${code} ${String(data?.msg || data?.message || "").slice(0, 120)}` };
+    }
+    const uuid = data?.data?.generateUuid || data?.generateUuid;
+    if (!uuid) return { ok: false, engine: "liblibcomfy", status: "error", message: "未返回 generateUuid（检查 templateUuid/workflowUuid 是否匹配，或该工作流未开通 API 服务）" };
+    return { ok: true, engine: "liblibcomfy", status: "submitted", engineTaskId: String(uuid) };
+  } catch (e) {
+    return { ok: false, engine: "liblibcomfy", status: "error", message: `Liblib ComfyUI: ${(e as Error).message.slice(0, 160)}` };
+  }
+}
+
+/** Liblib ComfyUI 轮询：优先 comfy/status，异常回退 webui/status（两者响应结构一致） */
+export async function pollLiblibComfy(uuid: string): Promise<{ status: string; images?: string[]; message?: string }> {
+  const { ak, sk, base } = liblibConf();
+  const path = "/api/generate/comfy/status";
+  const q = new URLSearchParams(liblibSign(path, ak, sk)).toString();
+  try {
+    const res = await fetch(`${base}${path}?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generateUuid: uuid }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const d = data?.data ?? data;
+      const st = d?.generateStatus;
+      if (st !== undefined || Array.isArray(d?.images)) {
+        if (st === 6 || st === 7) return { status: "failed", message: String(d?.generateMsg || d?.msg || "任务失败") };
+        if (st === 5 || Array.isArray(d?.images)) {
+          const images: string[] = [];
+          for (const it of (d?.images || [])) {
+            const url = it?.imageUrl || (typeof it === "string" ? it : undefined);
+            if (url) images.push(String(url));
+          }
+          if (images.length) return { status: "done", images };
+        }
+        return { status: "processing" };
+      }
+    }
+  } catch { /* 端点不可用，回退 webui/status */ }
+  return pollLiblib(uuid);
+}
+
 /** 即梦 / Seedream（火山方舟 ARK，OpenAI 兼容接口，同步返回）
  *  产品保真（2026-09-03 接入）：有参考图时走图生图——Seedream 4.0 支持多张参考图
  *  （最多 10 张，公网 URL 或 base64 data URI，body.image 数组），主体外观/材质/颜色
@@ -489,6 +602,7 @@ export async function submitImage(engine: string, job: ImageJob): Promise<Engine
     case "wanxiang": return submitWanxiang(job);
     case "jimeng": return submitJimeng(job);
     case "liblib": return submitLiblib(job);
+    case "liblibcomfy": return submitLiblibComfy(job);
     case "comfyui": return submitComfyUI(job);
     default:
       return { ok: false, engine, status: "error", message: `未知引擎 ${engine}` };
@@ -500,6 +614,7 @@ export async function pollImage(engine: string, engineTaskId: string) {
   if (engine === "lovart") return pollLovart(engineTaskId);
   if (engine === "wanxiang") return pollWanxiang(engineTaskId);
   if (engine === "liblib") return pollLiblib(engineTaskId);
+  if (engine === "liblibcomfy") return pollLiblibComfy(engineTaskId);
   if (engine === "comfyui") return pollComfyUI(engineTaskId);
   return { status: "processing" as const };
 }

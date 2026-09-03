@@ -43,3 +43,4 @@ dist/
 
 # WorkBuddy 本地记忆（机器级，不进仓库）
 .workbuddy/
+junk-dist-old-20260903/

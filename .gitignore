@@ -31,3 +31,6 @@ npm-debug.log*
 
 # 测试截图（QA 临时产物）
 qa-*.png
+
+# 数据备份（含加密密钥+数据库+出图产物——绝不提交）
+data-backup.zip

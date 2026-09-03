@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+
+# Next.js 构建产物
+.next/
+out/
+
+# 本地数据（含加密主密钥、DB、真实 KEY 密文、出图产物——绝不提交）
+data/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# 日志
+*.log
+npm-debug.log*
+
+# 测试截图（QA 临时产物）
+qa-*.png
+
+# 数据备份（含加密密钥+数据库+出图产物——绝不提交）
+data-backup.zip

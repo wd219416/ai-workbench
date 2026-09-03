@@ -16,10 +16,15 @@ export const useShell = () => useContext(Ctx);
 
 const NAV = [
   { href: "/studio", name: "作图工作台", icon: "🎨" },
+  { href: "/reverse", name: "反推工作台", icon: "🔍" },
   { href: "/video", name: "视频工作台", icon: "🎬" },
+  { href: "/clipforge", name: "带货视频", icon: "🛒" },
+  { href: "/selling", name: "卖点提炼", icon: "💎" },
   { href: "/tasks", name: "任务中心", icon: "📋" },
   { href: "/plans", name: "发布计划", icon: "📅" },
   { href: "/library", name: "素材库", icon: "🗂" },
+  { href: "/templates", name: "提示词库", icon: "📝" },
+  { href: "/liblib", name: "风格模型库", icon: "🧩" },
   { href: "/knowledge", name: "知识库", icon: "📚" },
   { href: "/service", name: "品牌客服", icon: "💬" },
   { href: "/pricing", name: "计费表", icon: "💰", admin: true },

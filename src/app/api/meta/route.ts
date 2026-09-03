@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { getMeta } from "@/lib/db";
-import { IMAGE_ENGINES } from "@/lib/engines/image";
-import { VIDEO_ENGINES } from "@/lib/engines/video";
+import { IMAGE_ENGINES, VIDEO_ENGINES } from "@/lib/engines/registry";
 import { startScheduler } from "@/lib/scheduler";
 
 export async function GET() {

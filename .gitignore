@@ -34,3 +34,12 @@ qa-*.png
 
 # 数据备份（含加密密钥+数据库+出图产物——绝不提交）
 data-backup.zip
+
+# standalone 部署产物（build.bat 生成，55M 构建产物——不提交）
+server/
+
+# 旧 standalone 实验产物（dist/ 方案已废弃，统一用 server/ + build.bat）
+dist/
+
+# WorkBuddy 本地记忆（机器级，不进仓库）
+.workbuddy/

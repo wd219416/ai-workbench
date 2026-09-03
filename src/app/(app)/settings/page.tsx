@@ -1,40 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-
-/** 模型下拉预设：key → 列表（input 用 datalist，可下拉也可手填） */
-const MODEL_PRESETS: Record<string, { v: string; tip?: string }[]> = {
-  jimeng_model: [
-    { v: "doubao-seedream-5-0-pro", tip: "🔥 旗舰·最新·编辑可控" },
-    { v: "doubao-seedream-4-5-250911", tip: "文生图+图生图+组图" },
-    { v: "doubao-seedream-5-0-lite", tip: "可联网·轻量·热点类" },
-    { v: "doubao-seedream-4-0-250828", tip: "上一代稳定款" },
-  ],
-  wanxiang_model: [
-    { v: "wanx2.1-t2i-turbo", tip: "通义万相 2.1 快速版（默认）" },
-    { v: "wanx2.1-t2i-plus", tip: "通义万相 2.1 高质量" },
-    { v: "wanx2.0-t2i-turbo", tip: "通义万相 2.0 快速版" },
-  ],
-  deepseek_model: [
-    { v: "deepseek-chat", tip: "通用对话（默认）" },
-    { v: "deepseek-reasoner", tip: "深度推理（R1）" },
-  ],
-  qwen_vl_model: [
-    { v: "qwen-vl-max", tip: "最强视觉理解（默认）" },
-    { v: "qwen-vl-plus", tip: "均衡款" },
-  ],
-};
-
-const GROUPS = [
-  { name: "DeepSeek（提示词生成）", test: "deepseek", keys: [["deepseek_key", "API Key"], ["deepseek_base", "Base URL"], ["deepseek_model", "模型"]] },
-  { name: "阿里百炼 Qwen-VL（反推提示词）", test: "qwen", keys: [["qwen_key", "API Key"], ["qwen_base", "Base URL"], ["qwen_vl_model", "视觉模型"]] },
-  { name: "通义万相（出图 · 用百炼KEY）", test: "wanxiang", keys: [["wanxiang_key", "API Key（留空则用上面的百炼KEY）"], ["wanxiang_model", "模型（默认 wanx2.1-t2i-turbo）"]] },
-  { name: "即梦 Seedream（出图 · 火山方舟）", test: "jimeng", keys: [["jimeng_key", "方舟 API Key"], ["jimeng_base", "Base URL"], ["jimeng_model", "模型（默认 doubao-seedream-4-0）"]] },
-  { name: "LOVART（出图 · 双KEY · 需代理）", test: "lovart", keys: [["lovart_ak", "Access Key"], ["lovart_sk", "Secret Key"], ["lovart_base", "Base URL（默认 lgw.lovart.ai）"], ["lovart_path", "API 前缀（默认 /v1/openapi）"], ["lovart_project_id", "项目ID（留空自动创建）"]] },
-  { name: "可灵（出图 + 出视频）", test: "kling", keys: [["kling_ak", "API Key（新版单 Key 只填这栏）"], ["kling_sk", "Secret Key（仅旧版双KEY填，否则留空）"], ["kling_base", "Base URL"]] },
-  { name: "Vidu Q3（出视频）", test: "vidu", keys: [["vidu_key", "Token"], ["vidu_base", "Base URL"]] },
-  { name: "ComfyUI（预留）", test: "comfyui", keys: [["comfyui_local_url", "本地地址"], ["comfyui_cloud_url", "云端地址"], ["comfyui_workflow", "Workflow JSON（用 {{prompt}} 占位）"]] },
-  { name: "默认引擎", test: null, keys: [["default_image_engine", "默认出图引擎"], ["default_video_engine", "默认视频引擎"]] },
-] as const;
+import { SETTINGS_GROUPS, MODEL_PRESETS } from "@/lib/engines/registry";
 
 interface U { id: number; username: string; role: string; created_at: string }
 
@@ -113,7 +79,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {GROUPS.map((g) => (
+      {SETTINGS_GROUPS.map((g) => (
         <div key={g.name} className="card p-4">
           <div className="flex items-center justify-between mb-3">
             <div className="text-sm font-medium">{g.name}</div>
@@ -131,17 +97,17 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {g.keys.map(([k, label]) => (
-              <div key={k} className={k.includes("workflow") ? "col-span-2" : ""}>
-                <label className="label">{label}</label>
-                {k.includes("workflow")
-                  ? <textarea className="input h-20 resize-none text-[11px]" value={settings[k] || ""} onChange={(e) => setSettings({ ...settings, [k]: e.target.value })} />
-                  : MODEL_PRESETS[k]
+            {g.fields.map((f) => (
+              <div key={f.key} className={f.long ? "col-span-2" : ""}>
+                <label className="label">{f.label}</label>
+                {f.long
+                  ? <textarea className="input h-20 resize-none text-[11px]" value={settings[f.key] || ""} onChange={(e) => setSettings({ ...settings, [f.key]: e.target.value })} />
+                  : MODEL_PRESETS[f.key]
                     ? <div>
-                        <input className="input" list={`dl-${k}`} placeholder="可下拉选，也可手填" value={settings[k] || ""} onChange={(e) => setSettings({ ...settings, [k]: e.target.value })} />
-                        <datalist id={`dl-${k}`}>{MODEL_PRESETS[k].map((m) => <option key={m.v} value={m.v}>{m.tip ? `${m.v}（${m.tip}）` : m.v}</option>)}</datalist>
+                        <input className="input" list={`dl-${f.key}`} placeholder="可下拉选，也可手填" value={settings[f.key] || ""} onChange={(e) => setSettings({ ...settings, [f.key]: e.target.value })} />
+                        <datalist id={`dl-${f.key}`}>{MODEL_PRESETS[f.key].map((m) => <option key={m.v} value={m.v}>{m.tip ? `${m.v}（${m.tip}）` : m.v}</option>)}</datalist>
                       </div>
-                    : <input className="input" value={settings[k] || ""} onChange={(e) => setSettings({ ...settings, [k]: e.target.value })} />}
+                    : <input className="input" value={settings[f.key] || ""} onChange={(e) => setSettings({ ...settings, [f.key]: e.target.value })} />}
               </div>
             ))}
           </div>

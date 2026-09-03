@@ -1,7 +1,8 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
-import { getSetting, run } from "../db";
+import { getSetting, all } from "../db";
 import { klingAuth, klingErrorMsg } from "./kling-auth";
+import { liblibConf, liblibSign } from "./liblib";
+import { submitLovartChat, pollLovartChat } from "./lovart";
 
 export interface ImageJob {
   prompt: string;
@@ -9,7 +10,9 @@ export interface ImageJob {
   width?: number;
   height?: number;
   n?: number;
-  refImagePath?: string; // 图生图/实景合成的参考图（服务器本地路径）
+  refImagePath?: string;  // 图生图/实景合成的参考图（服务器本地路径，单引擎单图）
+  refImagePaths?: string[]; // 多参考图（产品保真多角度，LOVART attachments 全量生效；其余引擎取第一张）
+  loraIds?: number[];     // 套用的 Liblib 本地收藏模型 id（仅 Liblib 引擎生效）
 }
 
 export interface EngineReply {
@@ -61,97 +64,21 @@ export async function pollKling(engineTaskId: string): Promise<{ status: string;
   return { status: st === "succeed" ? "done" : st === "failed" ? "failed" : "processing", images, message: data?.data?.task_status_msg };
 }
 
-/** LOVART Agent OpenAPI（官方签名方案，已实测通过）：
- *  base https://lgw.lovart.ai + 前缀 /v1/openapi
- *  签名: HMAC-SHA256(sk, "{METHOD}\n{path}\n{ts}")，path 不含 query
- *  头: X-Access-Key / X-Timestamp / X-Signature / X-Signed-Method / X-Signed-Path */
-function lovartConf() {
-  return {
-    ak: getSetting("lovart_ak"), sk: getSetting("lovart_sk"),
-    base: (getSetting("lovart_base") || "https://lgw.lovart.ai").replace(/\/$/, ""),
-    prefix: getSetting("lovart_path") || "/v1/openapi",
-  };
-}
-
-function lovartSign(method: string, path: string, ak: string, sk: string): Record<string, string> {
-  const ts = String(Math.floor(Date.now() / 1000));
-  const sig = crypto.createHmac("sha256", sk).update(`${method}\n${path}\n${ts}`).digest("hex");
-  return { "X-Access-Key": ak, "X-Timestamp": ts, "X-Signature": sig, "X-Signed-Method": method, "X-Signed-Path": path };
-}
-
-async function lovartApi<T>(method: string, path: string, body?: unknown, query?: string): Promise<T> {
-  const { ak, sk, base } = lovartConf();
-  const res = await fetch(`${base}${path}${query ? `?${query}` : ""}`, {
-    method,
-    headers: { "Content-Type": "application/json", ...lovartSign(method, path, ak, sk) },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 150)}`);
-  const data = await res.json();
-  if (data?.code !== 0) throw new Error(data?.message || `code ${data?.code}`);
-  return (data.data ?? data) as T;
-}
-
-/** 项目ID：设置页可指定；为空自动创建"AI内容工作台"项目并记住 */
-async function lovartProjectId(prefix: string): Promise<string> {
-  const saved = getSetting("lovart_project_id");
-  if (saved) return saved;
-  const r = await lovartApi<{ project_id?: string }>("POST", `${prefix}/project/save`, {
-    project_id: "", canvas: "", project_cover_list: [], pic_count: 0, project_type: 3, project_name: "AI内容工作台",
-  });
-  const pid = r.project_id || "";
-  if (pid) run("UPDATE settings SET value=? WHERE key='lovart_project_id'", pid);
-  return pid;
-}
-
-/** 参考图上传到 LOVART CDN（实景合成用），返回 CDN URL */
-async function lovartUpload(prefix: string, filePath: string): Promise<string> {
-  const { ak, sk, base } = lovartConf();
-  const path = `${prefix}/file/upload`;
-  const buf = fs.readFileSync(filePath);
-  const form = new FormData();
-  form.append("file", new Blob([buf]), filePath.split(/[\\/]/).pop());
-  const res = await fetch(`${base}${path}`, {
-    method: "POST", headers: lovartSign("POST", path, ak, sk), body: form, signal: AbortSignal.timeout(60000),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data?.code !== 0) throw new Error(`参考图上传失败: ${data?.message || res.status}`);
-  return data.data.url;
-}
-
+/** LOVART：提交出图（模型软偏好走 lovart.ts 的 submitLovartChat，tool_config=IMAGE）
+ *  产品保真：refImagePaths 多角度参考图全部上传为 attachments；无多图时回退 refImagePath 单图 */
 async function submitLovart(job: ImageJob): Promise<EngineReply> {
-  const { ak, sk, prefix } = lovartConf();
-  if (!ak || !sk) return { ok: false, engine: "lovart", status: "needs_key", message: "未配置 LOVART 双KEY，请到设置页填写" };
-  try {
-    const project_id = await lovartProjectId(prefix);
-    if (!project_id) throw new Error("项目创建失败");
-    const body: Record<string, unknown> = { prompt: job.prompt, project_id, mode: "fast" };
-    // 实景合成：参考图传 CDN 后作为附件
-    if (job.refImagePath && fs.existsSync(job.refImagePath)) {
-      body.attachments = [await lovartUpload(prefix, job.refImagePath)];
-    }
-    const r = await lovartApi<{ thread_id?: string }>("POST", `${prefix}/chat`, body);
-    if (!r.thread_id) throw new Error("未返回 thread_id");
-    return { ok: true, engine: "lovart", status: "submitted", engineTaskId: r.thread_id };
-  } catch (e) {
-    return { ok: false, engine: "lovart", status: "error", message: `LOVART: ${(e as Error).message.slice(0, 180)}` };
+  const paths = job.refImagePaths?.length ? job.refImagePaths : job.refImagePath ? [job.refImagePath] : [];
+  const r = await submitLovartChat("IMAGE", job.prompt, { paths });
+  if (!r.ok) {
+    const needsKey = r.message?.includes("未配置 LOVART 双KEY");
+    return { ok: false, engine: "lovart", status: needsKey ? "needs_key" : "error", message: r.message };
   }
+  return { ok: true, engine: "lovart", status: "submitted", engineTaskId: r.threadId! };
 }
 
 export async function pollLovart(engineTaskId: string): Promise<{ status: string; images?: string[]; message?: string }> {
-  const { prefix } = lovartConf();
-  try {
-    const q = `thread_id=${encodeURIComponent(engineTaskId)}`;
-    const s = await lovartApi<{ status?: string }>("GET", `${prefix}/chat/status`, undefined, q);
-    if (s.status === "abort") return { status: "failed", message: "LOVART 任务中止" };
-    if (s.status !== "done") return { status: "processing" };
-    const r = await lovartApi<{ items?: { artifacts?: { type?: string; content?: string }[] }[] }>("GET", `${prefix}/chat/result`, undefined, q);
-    const images = (r.items || []).flatMap((i) => (i.artifacts || []).filter((a) => a.type === "image" && a.content).map((a) => a.content!));
-    return { status: "done", images };
-  } catch (e) {
-    return { status: "error", message: `LOVART查询: ${(e as Error).message.slice(0, 120)}` };
-  }
+  const r = await pollLovartChat(engineTaskId);
+  return { status: r.status, images: r.images, message: r.message };
 }
 
 /** 通义万相（阿里百炼 DashScope 异步任务，直接用百炼 KEY） */
@@ -186,6 +113,188 @@ export async function pollWanxiang(taskId: string): Promise<{ status: string; im
   const st = data?.output?.task_status; // PENDING / RUNNING / SUCCEEDED / FAILED
   const images = data?.output?.results?.map((r: { url: string }) => r.url);
   return { status: st === "SUCCEEDED" ? "done" : st === "FAILED" ? "failed" : "processing", images, message: data?.output?.message };
+}
+
+/** LiblibAI 开放平台（openapi.liblibai.cloud）—— 2026-09-03 已用真实 Key 实测跑通：
+ *  - 鉴权：查询参数 AccessKey + Signature + Timestamp + SignatureNonce
+ *  - 签名：HMAC-SHA1(sk, "{uri}&{ts_ms}&{nonce}")，base64url 去 padding
+ *  - 文生图：POST /api/generate/webui/text2img，body { templateUuid, generateParams{ prompt, width, height, steps, cfgScale, seed, imgCount, checkPointId? } }
+ *    返回 data.generateUuid（不是 task_id）
+ *  - 图生图：POST /api/generate/webui/img2img，参考图先上传拿 URL 再填 generateParams.sourceImage
+ *    （必填：sourceImage + resizeMode + resizedWidth + resizedHeight + denoisingStrength）
+ *  - 参考图上传：POST /api/generate/upload/signature 拿 OSS 直传签名 → FormData 直传阿里云 OSS → 拼 URL
+ *    （签名接口返回驼峰 xOss* 字段，官方 SDK 误写小写 xoss*，是个坑）
+ *  - 轮询：POST /api/generate/webui/status，body { generateUuid }
+ *    返回 data.generateStatus：2=处理中，5=成功，6/7=失败；成功图在 data.images[].imageUrl
+ *  - 计费：任务完成后 data.pointsCost / data.accountBalance 返回积分消耗与余额
+ *  - 模板 UUID：文生图 e10adc3949ba59abbe56e057f20f883e；图生图 9c7d531dc75f476aa833b3d452b8f7ad
+ *    ultra 文生图 5d7e67009b344550bc1aa6ccbfa1d7f4；ultra 图生图 07e00af4fc464c7ab55ff906f8acf1b7 */
+
+/** 参考图上传到 Liblib OSS（图生图用），返回公开图片 URL。
+ *  官方流程：POST /api/generate/upload/signature 拿 OSS 直传签名 → FormData 直传阿里云 OSS → 拼 URL。
+ *  注意：签名接口返回的是驼峰 xOss* 字段（官方 SDK 误写为小写 xoss*，照抄会全填 undefined）。 */
+async function liblibUpload(filePath: string): Promise<string> {
+  const { ak, sk, base } = liblibConf();
+  const filename = filePath.split(/[\\/]/).pop() || "ref.png";
+  const dot = filename.lastIndexOf(".");
+  const name = dot > 0 ? filename.slice(0, dot) : filename;
+  const extension = dot > 0 ? filename.slice(dot + 1) : "png";
+
+  // 1) 拿 OSS 直传签名
+  const sigPath = "/api/generate/upload/signature";
+  const sq = new URLSearchParams(liblibSign(sigPath, ak, sk)).toString();
+  const sr = await fetch(`${base}${sigPath}?${sq}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, extension }),
+    signal: AbortSignal.timeout(30000),
+  });
+  const sdata = await sr.json().catch(() => ({}));
+  if (!sr.ok || (sdata?.code !== undefined && sdata?.code !== 0)) {
+    throw new Error(`上传签名失败: ${sdata?.msg || sr.status}`);
+  }
+  const sd = sdata?.data ?? {};
+  if (!sd?.postUrl) throw new Error("上传签名未返回 postUrl");
+
+  // 2) FormData 直传 OSS（字段名是驼峰 xOss*）
+  const buf = fs.readFileSync(filePath);
+  const form = new FormData();
+  form.append("x-oss-signature", sd.xOssSignature as string);
+  form.append("x-oss-date", sd.xOssDate as string);
+  form.append("x-oss-signature-version", sd.xOssSignatureVersion as string);
+  form.append("policy", sd.policy as string);
+  form.append("key", sd.key as string);
+  form.append("x-oss-credential", sd.xOssCredential as string);
+  form.append("x-oss-expires", String(sd.xOssExpires));
+  form.append("file", new Blob([new Uint8Array(buf)], { type: `image/${extension}` }), filename);
+  const ur = await fetch(sd.postUrl as string, {
+    method: "POST", body: form, signal: AbortSignal.timeout(60000),
+  });
+  if (!ur.ok) throw new Error(`OSS 上传失败 ${ur.status}`);
+  return new URL(sd.key as string, sd.postUrl as string).toString();
+}
+
+/** 根据本地收藏的 Liblib 模型 id，组装 additionalNetwork / checkPointId。
+ *  - LoRA 最多 5 个，超出的截断；禁商用(forbidden)模型跳过。
+ *  - checkpoint 型模型作为底模 checkPointId（优先于设置页默认底模）。 */
+function buildLiblibNetworks(ids?: number[]): {
+  additionalNetwork?: { modelId: string; weight: number }[];
+  checkPointId?: string;
+} {
+  if (!ids?.length) return {};
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = all<{ id: number; version_uuid: string; kind: string; weight: number; license: string; name: string }>(
+    `SELECT id, version_uuid, kind, weight, license, name FROM liblib_models WHERE id IN (${placeholders})`,
+    ...ids
+  );
+  const additionalNetwork: { modelId: string; weight: number }[] = [];
+  let checkPointId = "";
+  for (const r of rows) {
+    if (r.license === "forbidden") continue;
+    if (r.kind === "checkpoint") {
+      if (!checkPointId) checkPointId = r.version_uuid;
+    } else {
+      additionalNetwork.push({ modelId: r.version_uuid, weight: r.weight });
+    }
+  }
+  if (additionalNetwork.length > 5) additionalNetwork.length = 5;
+  return {
+    additionalNetwork: additionalNetwork.length ? additionalNetwork : undefined,
+    checkPointId: checkPointId || undefined,
+  };
+}
+
+async function submitLiblib(job: ImageJob): Promise<EngineReply> {
+  const { ak, sk, base } = liblibConf();
+  if (!ak || !sk) return { ok: false, engine: "liblib", status: "needs_key", message: "未配置 LiblibAI 双KEY，请到设置页填写（企业认证后获取）" };
+  const clamp = (v?: number) => Math.min(2048, Math.max(512, Math.round(v || 1024)));
+  const checkPointIdSetting = getSetting("liblib_model") || "";
+  const nets = buildLiblibNetworks(job.loraIds);
+
+  // 有参考图 → 图生图；否则文生图
+  const isI2i = !!job.refImagePath && fs.existsSync(job.refImagePath);
+  const path = isI2i ? "/api/generate/webui/img2img" : "/api/generate/webui/text2img";
+  const q = new URLSearchParams(liblibSign(path, ak, sk)).toString();
+  const templateUuid = isI2i
+    ? getSetting("liblib_i2i_template") || "9c7d531dc75f476aa833b3d452b8f7ad"
+    : getSetting("liblib_template") || "e10adc3949ba59abbe56e057f20f883e";
+
+  const gp: Record<string, unknown> = {
+    prompt: job.prompt,
+    width: clamp(job.width),
+    height: clamp(job.height),
+    steps: 20,
+    cfgScale: 7,
+    seed: -1,
+    imgCount: Math.min(job.n || 1, 4),
+  };
+  // 底模优先级：收藏库里的 checkpoint > 设置页默认底模
+  if (nets.checkPointId) gp.checkPointId = nets.checkPointId;
+  else if (checkPointIdSetting) gp.checkPointId = checkPointIdSetting;
+  if (job.negative) gp.negativePrompt = job.negative;
+  if (nets.additionalNetwork) gp.additionalNetwork = nets.additionalNetwork;
+
+  try {
+    if (isI2i) {
+      // 参考图上传拿 URL，填 sourceImage + 重绘参数
+      const src = await liblibUpload(job.refImagePath!);
+      const denoise = parseFloat(getSetting("liblib_denoise") || "0.6") || 0.6;
+      gp.sourceImage = src;
+      gp.resizeMode = 0; // 0=拉伸 1=裁剪 2=填充
+      gp.resizedWidth = clamp(job.width);
+      gp.resizedHeight = clamp(job.height);
+      gp.denoisingStrength = Math.min(0.95, Math.max(0.1, denoise));
+    }
+    const res = await fetch(`${base}${path}?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ templateUuid, generateParams: gp }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json().catch(() => ({}));
+    const code = data?.code;
+    if (!res.ok || (code !== undefined && code !== 0)) {
+      return { ok: false, engine: "liblib", status: "error", message: `LiblibAI ${res.status} code=${code} ${String(data?.msg || data?.message || "").slice(0, 120)}` };
+    }
+    const uuid = data?.data?.generateUuid || data?.generateUuid;
+    if (!uuid) return { ok: false, engine: "liblib", status: "error", message: "LiblibAI 未返回 generateUuid（参数未过校验，检查模板/底模/提示词）" };
+    return { ok: true, engine: "liblib", status: "submitted", engineTaskId: String(uuid) };
+  } catch (e) {
+    return { ok: false, engine: "liblib", status: "error", message: `LiblibAI: ${(e as Error).message.slice(0, 160)}` };
+  }
+}
+
+export async function pollLiblib(uuid: string): Promise<{ status: string; images?: string[]; message?: string }> {
+  const { ak, sk, base } = liblibConf();
+  const path = "/api/generate/webui/status";
+  const q = new URLSearchParams(liblibSign(path, ak, sk)).toString();
+  try {
+    const res = await fetch(`${base}${path}?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ generateUuid: uuid }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const data = await res.json().catch(() => ({}));
+    const d = data?.data ?? data;
+    const st = d?.generateStatus;
+    // generateStatus: 2=处理中 5=成功 6/7=失败
+    if (st === 6 || st === 7) return { status: "failed", message: String(d?.generateMsg || d?.msg || "任务失败") };
+    if (st === 5) {
+      const images: string[] = [];
+      const arr = d?.images || [];
+      if (Array.isArray(arr)) {
+        for (const it of arr) {
+          const url = it?.imageUrl || (typeof it === "string" ? it : undefined);
+          if (url) images.push(String(url));
+        }
+      }
+      return images.length ? { status: "done", images } : { status: "processing" };
+    }
+    return { status: "processing" };
+  } catch (e) {
+    return { status: "error", message: `LiblibAI查询: ${(e as Error).message.slice(0, 120)}` };
+  }
 }
 
 /** 即梦 / Seedream（火山方舟 ARK，OpenAI 兼容接口，同步返回） */
@@ -256,20 +365,13 @@ function ratioOf(w?: number, h?: number): string {
 }
 function gcd(a: number, b: number): number { return b ? gcd(b, a % b) : a; }
 
-export const IMAGE_ENGINES = [
-  { code: "lovart", name: "LOVART", keyHint: "双KEY" },
-  { code: "kling", name: "可灵", keyHint: "ak/sk" },
-  { code: "wanxiang", name: "通义万相", keyHint: "百炼KEY" },
-  { code: "jimeng", name: "即梦", keyHint: "方舟KEY" },
-  { code: "comfyui", name: "ComfyUI", keyHint: "预留" },
-];
-
 export async function submitImage(engine: string, job: ImageJob): Promise<EngineReply> {
   switch (engine) {
     case "kling": return submitKling(job);
     case "lovart": return submitLovart(job);
     case "wanxiang": return submitWanxiang(job);
     case "jimeng": return submitJimeng(job);
+    case "liblib": return submitLiblib(job);
     case "comfyui": return submitComfyUI(job);
     default:
       return { ok: false, engine, status: "error", message: `未知引擎 ${engine}` };
@@ -280,6 +382,7 @@ export async function pollImage(engine: string, engineTaskId: string) {
   if (engine === "kling") return pollKling(engineTaskId);
   if (engine === "lovart") return pollLovart(engineTaskId);
   if (engine === "wanxiang") return pollWanxiang(engineTaskId);
+  if (engine === "liblib") return pollLiblib(engineTaskId);
   if (engine === "comfyui") return pollComfyUI(engineTaskId);
   return { status: "processing" as const };
 }

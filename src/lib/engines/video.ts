@@ -1,5 +1,6 @@
 import { getSetting } from "../db";
 import { klingAuth, klingErrorMsg } from "./kling-auth";
+import { submitLovartChat, pollLovartChat } from "./lovart";
 
 export interface VideoJob {
   prompt: string;
@@ -88,14 +89,24 @@ export async function pollVidu(engineTaskId: string): Promise<{ status: string; 
   return { status: st === "success" ? "done" : st === "failed" ? "failed" : "processing", videos };
 }
 
-export const VIDEO_ENGINES = [
-  { code: "kling", name: "可灵", keyHint: "ak/sk" },
-  { code: "vidu", name: "Vidu Q3", keyHint: "Token" },
-  { code: "jimeng", name: "即梦(跳转)", keyHint: "网页" },
-];
+/** LOVART：提交出视频（模型软偏好走 lovart.ts 的 submitLovartChat，tool_config=VIDEO；首帧以 base64 上传为附件） */
+async function submitLovartVideo(job: VideoJob): Promise<VideoReply> {
+  const r = await submitLovartChat("VIDEO", job.prompt, job.imageUrl ? { base64: job.imageUrl } : undefined);
+  if (!r.ok) {
+    const needsKey = r.message?.includes("未配置 LOVART 双KEY");
+    return { ok: false, engine: "lovart", status: needsKey ? "needs_key" : "error", message: r.message };
+  }
+  return { ok: true, engine: "lovart", status: "submitted", engineTaskId: r.threadId! };
+}
+
+export async function pollLovartVideo(engineTaskId: string): Promise<{ status: string; videos?: string[]; message?: string }> {
+  const r = await pollLovartChat(engineTaskId);
+  return { status: r.status, videos: r.videos, message: r.message };
+}
 
 export async function submitVideo(engine: string, job: VideoJob): Promise<VideoReply> {
   if (engine === "kling") return submitKlingVideo(job);
+  if (engine === "lovart") return submitLovartVideo(job);
   if (engine === "vidu") return submitVidu(job);
   if (engine === "jimeng") return { ok: false, engine, status: "error", message: "即梦走跳转官网：复制脚本后到即梦网页手动生成" };
   return { ok: false, engine, status: "error", message: `未知引擎 ${engine}` };
@@ -103,6 +114,7 @@ export async function submitVideo(engine: string, job: VideoJob): Promise<VideoR
 
 export async function pollVideo(engine: string, engineTaskId: string, isI2V: boolean) {
   if (engine === "kling") return pollKlingVideo(engineTaskId, isI2V);
+  if (engine === "lovart") return pollLovartVideo(engineTaskId);
   if (engine === "vidu") return pollVidu(engineTaskId);
   return { status: "processing" as const };
 }

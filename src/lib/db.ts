@@ -3,8 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { isSensitiveKey, encField, decField } from "./crypto-field";
+import { dataDir } from "./paths";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = dataDir();
 const DB_PATH = path.join(DATA_DIR, "workbench.db");
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 
@@ -165,6 +166,21 @@ CREATE TABLE IF NOT EXISTS engine_pricing (
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   UNIQUE(engine, model)
 );
+CREATE TABLE IF NOT EXISTS liblib_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_uuid TEXT UNIQUE NOT NULL,
+  model_id TEXT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'lora',
+  style TEXT,
+  base_algo TEXT,
+  license TEXT NOT NULL DEFAULT 'unknown',
+  weight REAL NOT NULL DEFAULT 0.6,
+  model_url TEXT,
+  note TEXT,
+  business_line_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `;
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -176,6 +192,13 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   qwen_vl_model: "qwen-vl-max",
   wanxiang_key: "",
   wanxiang_model: "wanx2.1-t2i-turbo",
+  liblib_ak: "",
+  liblib_sk: "",
+  liblib_base: "https://openapi.liblibai.cloud",
+  liblib_model: "",
+  liblib_template: "e10adc3949ba59abbe56e057f20f883e",
+  liblib_i2i_template: "9c7d531dc75f476aa833b3d452b8f7ad",
+  liblib_denoise: "0.6",
   jimeng_key: "",
   jimeng_base: "https://ark.cn-beijing.volces.com/api/v3",
   jimeng_model: "doubao-seedream-4-0-250828",
@@ -184,6 +207,8 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   lovart_base: "https://lgw.lovart.ai",
   lovart_path: "/v1/openapi",
   lovart_project_id: "",
+  lovart_model: "generate_image_nano_banana_pro",
+  lovart_video_model: "generate_video_seedance_v2_5",
   kling_ak: "",
   kling_sk: "",
   kling_base: "https://api-beijing.klingai.com",
@@ -321,6 +346,18 @@ const EXTRA_TEMPLATES: [number, number, string, string, string, string, number][
     "{{requirement}}，标识牌夜景实景效果图，发光字夜间点亮效果，建筑立面灯光氛围，应标方案夜景版，写实渲染",
     "{{requirement_en}}, signage night-scene in-situ rendering, illuminated letters lit at night, building facade lighting ambience, bid proposal night version, photorealistic",
     "过曝, 变形, 水印, 文字错误", 7],
+  [2, 15, "钛金鼓面字门头",
+    "{{sign_text}}钛金鼓面字门头招牌，鼓面凸起立体字，钛金不锈钢拉丝质感，内发光，商业门头夜景实景，写实渲染",
+    "{{sign_text_en}} titanium gold drum-face 3D letter storefront sign, raised convex surface, brushed stainless steel texture, internal LED glow, commercial storefront at night, photorealistic",
+    "变形, 文字错误, 卡通, 水印, 过曝", 8],
+  [2, 15, "户外广告牌效果图",
+    "{{sign_text}}户外广告牌实景效果图，安装于建筑立面，夜间灯箱发光，真实环境光影，应标方案展示",
+    "{{sign_text_en}} outdoor billboard in-situ rendering, mounted on building facade, illuminated lightbox at night, realistic environmental lighting, bid proposal showcase",
+    "透视错误, 过曝, 水印, 文字错误", 9],
+  [1, 2, "木盆带货视频封面",
+    "{{product}}带货短视频封面，9:16竖版构图，商品突出，简洁背景，标题留白区，高点击率电商封面",
+    "{{product_en}} short-video cover, 9:16 vertical composition, product prominent, clean background, headline negative space, high-CTR e-commerce cover",
+    "杂乱, 水印, 文字, 低质量", 8],
 ];
 
 function ensureExtraTemplates(db: DatabaseSync) {
@@ -331,28 +368,53 @@ function ensureExtraTemplates(db: DatabaseSync) {
   }
 }
 
-/** 价格表种子（公开价仅供参考，可在 /pricing 管理页修改；折扣字段手填） */
+/** 增量补齐 DEFAULT_SETTINGS 新增的 key（已有库首启后不再走 seed 分支，这里每次启动兜底；INSERT OR IGNORE 不覆盖用户已配置值） */
+function ensureDefaultSettings(db: DatabaseSync) {
+  const ins = db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)");
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
+}
+
+/** 价格表种子（官方公开参考价 2026-09，可在 /pricing 管理页覆盖；折扣字段手填，不受种子影响） */
 const PRICING_SEED: [string, string, number, string, string][] = [
   // [engine, model, unit_price, unit, note]
-  ["kling", "kling-v2", 0.14, "张", "可灵图像·v2"],
-  ["kling", "kling-v2-master", 0.7, "秒", "可灵视频·v2-master（×时长）"],
-  ["wanxiang", "wanx2.1-t2i-turbo", 0.2, "张", "通义万相 2.1 快速"],
-  ["wanxiang", "wanx2.1-t2i-plus", 0.3, "张", "通义万相 2.1 高质量"],
-  ["wanxiang", "wanx2.0-t2i-turbo", 0.16, "张", "通义万相 2.0 快速"],
-  ["jimeng", "doubao-seedream-4-0-250828", 0.06, "张", "即梦 Seedream 4.0"],
-  ["jimeng", "doubao-seedream-4-5-250911", 0.08, "张", "即梦 Seedream 4.5"],
-  ["jimeng", "doubao-seedream-5-0-lite", 0.05, "张", "即梦 Seedream 5.0 lite"],
-  ["jimeng", "doubao-seedream-5-0-pro", 0.1, "张", "即梦 Seedream 5.0 pro 旗舰"],
-  ["vidu", "viduq3-pro", 1.0, "秒", "Vidu Q3 Pro（×时长）"],
+  ["kling", "kling-v2", 0.14, "张", "可灵图像·v2（参考价）"],
+  ["kling", "kling-v2-master", 0.8, "秒", "可灵视频·master（1080P 无声参考价，×时长）"],
+  ["wanxiang", "wanx2.1-t2i-turbo", 0.14, "张", "通义万相 2.1 快速"],
+  ["liblib", "default", 0.15, "张", "LiblibAI 聚合出图（按算力点，参考价，以平台为准）"],
+  ["wanxiang", "wanx2.1-t2i-plus", 0.2, "张", "通义万相 2.1 高质量"],
+  ["wanxiang", "wanx2.0-t2i-turbo", 0.04, "张", "通义万相 2.0 快速"],
+  ["jimeng", "doubao-seedream-4-0-250828", 0.2, "张", "即梦 Seedream 4.0"],
+  ["jimeng", "doubao-seedream-4-5-250911", 0.25, "张", "即梦 Seedream 4.5"],
+  ["jimeng", "doubao-seedream-5-0-lite", 0.22, "张", "即梦 Seedream 5.0 lite"],
+  ["jimeng", "doubao-seedream-5-0-pro", 0.3, "张", "即梦 Seedream 5.0 pro 旗舰（标准分辨率）"],
+  ["vidu", "viduq3-pro", 1.0, "秒", "Vidu Q3 Pro（1080P，×时长）"],
   ["vidu", "viduq3-turbo", 0.5, "秒", "Vidu Q3 Turbo（×时长）"],
   ["deepseek", "deepseek-chat", 2, "百万token", "DeepSeek Chat 输出价；输入约¥1/百万"],
   ["deepseek", "deepseek-reasoner", 16, "百万token", "DeepSeek R1 输出价；输入约¥4/百万"],
   ["lovart", "default", 0.1, "credit", "LOVART 按 credit；价格请以控制台为准"],
+  ["lovart", "generate_image_nano_banana_2", 8, "credit", "LOVART Nano Banana 2（参考价）"],
+  ["lovart", "generate_image_nano_banana_pro", 14, "credit", "LOVART Nano Banana Pro（参考价）"],
+  ["lovart", "generate_image_gpt_image_2", 8, "credit", "LOVART GPT Image 2（参考价）"],
+  ["lovart", "generate_image_seedream_v5_pro", 8, "credit", "LOVART Seedream 5.0 Pro（参考价）"],
+  ["lovart", "generate_image_flux_2_pro", 4, "credit", "LOVART Flux 2 Pro（参考价）"],
+  ["lovart", "generate_image_midjourney", 8, "credit", "LOVART Midjourney（参考价）"],
+  ["lovart", "generate_video_seedance_v2_5", 40, "credit", "LOVART Seedance 2.5（参考价/5s）"],
+  ["lovart", "generate_video_seedance_v2_0", 40, "credit", "LOVART Seedance 2.0（参考价/5s）"],
+  ["lovart", "generate_video_kling_v3", 60, "credit", "LOVART Kling 3.0（参考价/5s）"],
+  ["lovart", "generate_video_kling_v3_omni", 40, "credit", "LOVART Kling 3.0 Omni（参考价/5s）"],
+  ["lovart", "generate_video_veo3_1", 40, "credit", "LOVART Veo 3.1（参考价/5s）"],
+  ["lovart", "generate_video_hailuo_v2_3", 20, "credit", "LOVART Hailuo 2.3（参考价/5s）"],
+  ["lovart", "generate_video_vidu_q2", 25, "credit", "LOVART Vidu Q2（参考价/5s）"],
+  ["lovart", "generate_video_wan_v2_6", 20, "credit", "LOVART Wan 2.6（参考价/5s）"],
 ];
 
 function ensurePricing(db: DatabaseSync) {
-  const ins = db.prepare("INSERT OR IGNORE INTO engine_pricing(engine,model,unit_price,unit,note) VALUES(?,?,?,?,?)");
-  for (const p of PRICING_SEED) ins.run(...p);
+  // upsert：同步官方参考价（unit_price/unit/note），但保留折扣字段（discount_pct/discount_until 由管理页控制）
+  const ups = db.prepare(
+    "INSERT INTO engine_pricing(engine,model,unit_price,unit,note) VALUES(?,?,?,?,?) " +
+    "ON CONFLICT(engine,model) DO UPDATE SET unit_price=excluded.unit_price, unit=excluded.unit, note=excluded.note"
+  );
+  for (const p of PRICING_SEED) ups.run(...p);
 }
 
 export function getDb(): DatabaseSync {
@@ -385,6 +447,7 @@ export function getDb(): DatabaseSync {
   try { _db.exec("ALTER TABLE tasks ADD COLUMN usage TEXT"); } catch { /* 已存在 */ }
   try { _db.exec("ALTER TABLE tasks ADD COLUMN cost REAL"); } catch { /* 已存在 */ }
   seed(_db);
+  ensureDefaultSettings(_db);
   ensureExtraTemplates(_db);
   ensurePricing(_db);
   g.__wb_db = _db;

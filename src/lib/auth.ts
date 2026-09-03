@@ -3,9 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { cookies } from "next/headers";
 import { get } from "./db";
+import { dataDir } from "./paths";
 
 function secret(): string {
-  const p = path.join(process.cwd(), "data", "secret.txt");
+  const p = path.join(dataDir(), "secret.txt");
   if (!fs.existsSync(p)) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, crypto.randomBytes(32).toString("hex"));

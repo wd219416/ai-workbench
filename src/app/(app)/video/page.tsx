@@ -77,6 +77,20 @@ export default function VideoPage() {
   }
 
   async function submit() {
+    // 合规门禁：脚本/口播文案违禁词扫描（警告不硬拦）
+    const checkText = script || videoPrompt;
+    if (checkText) {
+      const cr = await fetch("/api/compliance/check", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: checkText }),
+      }).then((r) => r.ok ? r.json() : { safe: true, hits: [] });
+      if (cr.hits?.length) {
+        const lines = cr.hits.map((h: { word: string; suggestion: string }) => `·「${h.word}」→ ${h.suggestion}`);
+        if (!confirm(`⚠️ 文案命中 ${cr.hits.length} 处广告法风险：\n${lines.join("\n")}\n\n仍要继续出视频吗？`)) return;
+      }
+    }
+    const est = costInfo ? (costInfo.perSec ? `预计 ¥${costInfo.total}` : `预计 ¥${costInfo.price}/${costInfo.unit}`) : "费用以引擎实际计费为准";
+    if (!confirm(`确认出视频？\n引擎：${engine}\n时长：${duration}秒\n${est}`)) return;
     setBusy("submit");
     const asset = assets.find((a) => a.id === assetId);
     const res = await fetch("/api/video/generate", {

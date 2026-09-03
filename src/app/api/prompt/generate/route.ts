@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { generatePrompt, buildChatGPTInstruction, PromptForm } from "@/lib/llm";
+import { checkCompliance } from "@/lib/compliance";
 import { get } from "@/lib/db";
 
 export async function POST(req: Request) {
@@ -15,5 +16,6 @@ export async function POST(req: Request) {
     : undefined;
   const result = await generatePrompt(form, tpl ?? undefined);
   const semiAuto = buildChatGPTInstruction(form, tpl?.template);
-  return NextResponse.json({ ...result, semiAuto });
+  const compliance = checkCompliance(result.cn);
+  return NextResponse.json({ ...result, semiAuto, compliance });
 }

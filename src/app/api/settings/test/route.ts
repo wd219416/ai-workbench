@@ -46,6 +46,35 @@ export async function POST(req: Request) {
       if (!key) return NextResponse.json({ ok: false, message: "未填写百炼 KEY（填 qwen_key 或 wanxiang_key）" });
       return NextResponse.json(await ping("https://dashscope.aliyuncs.com/compatible-mode/v1/models", { headers: { Authorization: `Bearer ${key}` } }));
     }
+    case "liblib": {
+      const ak = val("liblib_ak"), sk = val("liblib_sk");
+      if (!ak || !sk) return NextResponse.json({ ok: false, message: "未填写双 KEY（企业认证后获取）" });
+      // 官方开放平台：HMAC-SHA1 签名探测文生图接口（无裸 GET 探测端点）。
+      // 故意发不完整参数（不带 templateUuid），签名通过→HTTP 200+业务code(100050)；签名错→401/403。
+      const base = (val("liblib_base") || "https://openapi.liblibai.cloud").replace(/\/$/, "");
+      const path = "/api/generate/webui/text2img";
+      const ts = String(Date.now());
+      const nonce = crypto.randomUUID().replaceAll("-", "");
+      const sig = crypto.createHmac("sha1", sk).update(`${path}&${ts}&${nonce}`).digest("base64url");
+      const q = new URLSearchParams({ AccessKey: ak, Signature: sig, Timestamp: ts, SignatureNonce: nonce }).toString();
+      try {
+        const res = await fetch(`${base}${path}?${q}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: "ping" }), signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 || res.status === 403 || data?.code === 401 || data?.code === 403) {
+          return NextResponse.json({ ok: false, message: `服务可达，但鉴权失败（HTTP ${res.status} code=${data?.code}），请检查双 KEY` });
+        }
+        // HTTP 200 即签名通过（业务 code 100050 属"参数不完整"，正说明鉴权已过）
+        if (res.ok) {
+          return NextResponse.json({ ok: true, message: "连通正常，双KEY签名鉴权通过" });
+        }
+        return NextResponse.json({ ok: false, message: `服务可达，HTTP ${res.status} ${String(data?.msg || data?.message || "").slice(0, 60)}` });
+      } catch (e) {
+        return NextResponse.json({ ok: false, message: `连不通：${e instanceof Error ? e.message.slice(0, 100) : String(e)}` });
+      }
+    }
     case "jimeng": {
       const key = val("jimeng_key");
       if (!key) return NextResponse.json({ ok: false, message: "未填写方舟 API Key" });

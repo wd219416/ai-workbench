@@ -1,13 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { dataDir } from "./paths";
 
 /** 敏感字段（API KEY 类）在入库前加密、读取时解密。
  *  方案：AES-256-GCM，主密钥 32 字节存 data/fieldkey.bin（首次自动生成，权限 0600）。
  *  密文格式："enc:" + base64(iv(12) || ciphertext || tag(16))。
  *  历史/迁移期明文不前缀，decField 原样返回，由迁移逻辑择机加密。 */
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = dataDir();
 const KEY_FILE = path.join(DATA_DIR, "fieldkey.bin");
 let _key: Buffer | null = null;
 

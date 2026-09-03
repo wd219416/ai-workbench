@@ -192,6 +192,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   qwen_vl_model: "qwen-vl-max",
   wanxiang_key: "",
   wanxiang_model: "wanx2.1-t2i-turbo",
+  wanxiang_edit_model: "wanx2.1-imageedit",
   liblib_ak: "",
   liblib_sk: "",
   liblib_base: "https://openapi.liblibai.cloud",
@@ -218,7 +219,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   vidu_resolution: "720p",
   comfyui_local_url: "http://127.0.0.1:8188",
   comfyui_cloud_url: "",
-  comfyui_workflow: "",
+  comfyui_workflow: '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}},"steps":20,"cfg":7,"sampler_name":"euler","scheduler":"normal","denoise":1,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":"dreamshaper_8.safetensors"}},"5":{"class_type":"EmptyLatentImage","inputs":{"width":{{width}},"height":{{height}},"batch_size":{{n}}}},"6":{"class_type":"CLIPTextEncode","inputs":{"text":"{{prompt}}","clip":["4",1]}},"7":{"class_type":"CLIPTextEncode","inputs":{"text":"{{negative}}","clip":["4",1]}},"8":{"class_type":"VAEDecode","inputs":{"samples":["3",0],"vae":["4",2]}},"9":{"class_type":"SaveImage","inputs":{"filename_prefix":"ai-workbench","images":["8",0]}}}',
   default_image_engine: "lovart",
   default_video_engine: "kling",
   default_llm: "deepseek",
@@ -380,6 +381,7 @@ const PRICING_SEED: [string, string, number, string, string][] = [
   ["kling", "kling-v2", 0.14, "张", "可灵图像·v2（参考价）"],
   ["kling", "kling-v2-master", 0.8, "秒", "可灵视频·master（1080P 无声参考价，×时长）"],
   ["wanxiang", "wanx2.1-t2i-turbo", 0.14, "张", "通义万相 2.1 快速"],
+  ["wanxiang", "wanx2.1-imageedit", 0.2, "张", "通义万相 2.1 图像编辑（产品保真，参考价）"],
   ["liblib", "default", 0.15, "张", "LiblibAI 聚合出图（按算力点，参考价，以平台为准）"],
   ["wanxiang", "wanx2.1-t2i-plus", 0.2, "张", "通义万相 2.1 高质量"],
   ["wanxiang", "wanx2.0-t2i-turbo", 0.04, "张", "通义万相 2.0 快速"],
@@ -406,6 +408,7 @@ const PRICING_SEED: [string, string, number, string, string][] = [
   ["lovart", "generate_video_hailuo_v2_3", 20, "credit", "LOVART Hailuo 2.3（参考价/5s）"],
   ["lovart", "generate_video_vidu_q2", 25, "credit", "LOVART Vidu Q2（参考价/5s）"],
   ["lovart", "generate_video_wan_v2_6", 20, "credit", "LOVART Wan 2.6（参考价/5s）"],
+  ["comfyui", "default", 0, "张", "本地 ComfyUI（自家 GPU 推理，电费参考）"],
 ];
 
 function ensurePricing(db: DatabaseSync) {
@@ -448,6 +451,8 @@ export function getDb(): DatabaseSync {
   try { _db.exec("ALTER TABLE tasks ADD COLUMN cost REAL"); } catch { /* 已存在 */ }
   seed(_db);
   ensureDefaultSettings(_db);
+  // 增量迁移：ComfyUI workflow 为空时填充默认 SD1.5 模板
+  try { _db.prepare("UPDATE settings SET value=? WHERE key='comfyui_workflow' AND (value='' OR value IS NULL)").run(DEFAULT_SETTINGS.comfyui_workflow); } catch { /* 忽略 */ }
   ensureExtraTemplates(_db);
   ensurePricing(_db);
   g.__wb_db = _db;

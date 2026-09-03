@@ -98,6 +98,7 @@ export const ENGINES: EngineDef[] = [
     fields: [
       { key: "wanxiang_key", label: "API Key（留空则用上面的百炼KEY）" },
       { key: "wanxiang_model", label: "模型（默认 wanx2.1-t2i-turbo）" },
+      { key: "wanxiang_edit_model", label: "图编辑模型（有参考图时走产品保真，默认 wanx2.1-imageedit）" },
     ],
   },
   {
@@ -164,12 +165,12 @@ export const ENGINES: EngineDef[] = [
     ],
   },
   {
-    code: "comfyui", name: "ComfyUI", keyHint: "预留", kinds: ["image"], reserved: true,
-    groupName: "ComfyUI（预留）",
+    code: "comfyui", name: "ComfyUI", keyHint: "本地/云端", kinds: ["image"],
+    groupName: "ComfyUI（本地/云端工作流）",
     fields: [
-      { key: "comfyui_local_url", label: "本地地址" },
-      { key: "comfyui_cloud_url", label: "云端地址" },
-      { key: "comfyui_workflow", label: "Workflow JSON（用 {{prompt}} 占位）", long: true },
+      { key: "comfyui_local_url", label: "本地地址（默认 http://127.0.0.1:8188）" },
+      { key: "comfyui_cloud_url", label: "云端地址（优先于本地）" },
+      { key: "comfyui_workflow", label: "Workflow JSON（ComfyUI Save (API Format)，占位符：{{prompt}}/{{negative}}/{{width}}/{{height}}/{{seed}}/{{n}}）", long: true },
     ],
   },
 ];

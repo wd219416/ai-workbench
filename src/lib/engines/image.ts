@@ -87,6 +87,28 @@ function wxKey(): string { return getSetting("wanxiang_key") || getSetting("qwen
 async function submitWanxiang(job: ImageJob): Promise<EngineReply> {
   const key = wxKey();
   if (!key) return { ok: false, engine: "wanxiang", status: "needs_key", message: "未配置阿里百炼 KEY（设置页填 qwen_key 或 wanxiang_key）" };
+  const refPath = job.refImagePath && fs.existsSync(job.refImagePath) ? job.refImagePath : job.refImagePaths?.find((p) => p && fs.existsSync(p));
+  // 产品保真（2026-09-03 接入）：有参考图时走万相图像编辑（wanx2.1-imageedit），
+  // 原图为锚只改 prompt 描述的部分（换背景/重打光/风格化），异步任务复用 pollWanxiang。
+  if (refPath) {
+    const model = getSetting("wanxiang_edit_model") || "wanx2.1-imageedit";
+    const ext = refPath.toLowerCase().endsWith(".jpg") || refPath.toLowerCase().endsWith(".jpeg") ? "jpeg" : "png";
+    const dataUri = `data:image/${ext};base64,${fs.readFileSync(refPath).toString("base64")}`;
+    const res = await fetch("https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-DashScope-Async": "enable" },
+      body: JSON.stringify({
+        model,
+        // function 必填（实测枚举）：description_edit=描述编辑（换背景/重打光等跟随 prompt）、
+        // stylization_all/local=风格化、description_edit_with_mask=蒙版局部重绘、expand=扩图、super_resolution=超分
+        input: { function: "description_edit", prompt: job.prompt, base_image_url: dataUri },
+        parameters: { n: Math.min(job.n || 1, 4) },
+      }),
+    });
+    if (!res.ok) return { ok: false, engine: "wanxiang", status: "error", message: `万相图编辑 ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    const data = await res.json();
+    return { ok: true, engine: "wanxiang", status: "submitted", engineTaskId: data?.output?.task_id };
+  }
   const model = getSetting("wanxiang_model") || "wanx2.1-t2i-turbo";
   const clamp = (v?: number) => Math.min(1440, Math.max(512, Math.round(v || 1024)));
   const res = await fetch("https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis", {
@@ -297,23 +319,37 @@ export async function pollLiblib(uuid: string): Promise<{ status: string; images
   }
 }
 
-/** 即梦 / Seedream（火山方舟 ARK，OpenAI 兼容接口，同步返回） */
+/** 即梦 / Seedream（火山方舟 ARK，OpenAI 兼容接口，同步返回）
+ *  产品保真（2026-09-03 接入）：有参考图时走图生图——Seedream 4.0 支持多张参考图
+ *  （最多 10 张，公网 URL 或 base64 data URI，body.image 数组），主体外观/材质/颜色
+ *  以参考图为锚，prompt 只描述背景/场景/光影，实现「产品不重绘」。
+ *  strength 为重绘幅度（0-1）：值越低越贴近参考图，0.5 平衡保真与出效果。 */
 async function submitJimeng(job: ImageJob): Promise<EngineReply> {
   const key = getSetting("jimeng_key");
   const base = getSetting("jimeng_base") || "https://ark.cn-beijing.volces.com/api/v3";
   const model = getSetting("jimeng_model") || "doubao-seedream-4-0-250828";
   if (!key) return { ok: false, engine: "jimeng", status: "needs_key", message: "未配置火山方舟 KEY（设置页 jimeng_key）" };
   const clamp = (v?: number) => Math.min(4096, Math.max(512, Math.round(v || 1024)));
+  const refPaths = (job.refImagePaths?.length ? job.refImagePaths : job.refImagePath ? [job.refImagePath] : [])
+    .filter((p) => p && fs.existsSync(p))
+    .slice(0, 10); // Seedream 4.0 参考图上限
+  const body: Record<string, unknown> = {
+    model,
+    prompt: job.negative ? `${job.prompt}。避免：${job.negative}` : job.prompt,
+    size: `${clamp(job.width)}x${clamp(job.height)}`,
+    response_format: "url",
+    watermark: false,
+  };
+  if (refPaths.length) {
+    // 参考图转 base64 data URI（方舟 images/generations 接受 URL 或 data URI）
+    const ext = (p: string) => (p.toLowerCase().endsWith(".jpg") || p.toLowerCase().endsWith(".jpeg") ? "jpeg" : "png");
+    body.image = refPaths.map((p) => `data:image/${ext(p)};base64,${fs.readFileSync(p).toString("base64")}`);
+    body.strength = 0.5; // 重绘幅度：低=保真。产品保真场景建议配合「锁定声明」提示词
+  }
   const res = await fetch(`${base}/images/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      prompt: job.negative ? `${job.prompt}。避免：${job.negative}` : job.prompt,
-      size: `${clamp(job.width)}x${clamp(job.height)}`,
-      response_format: "url",
-      watermark: false,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) return { ok: false, engine: "jimeng", status: "error", message: `即梦 ${res.status}: ${(await res.text()).slice(0, 200)}` };
   const data = await res.json();
@@ -322,40 +358,79 @@ async function submitJimeng(job: ImageJob): Promise<EngineReply> {
   return { ok: true, engine: "jimeng", status: "done", images };
 }
 
-/** ComfyUI：预留适配器。填好地址+workflow 模板即可启用 */
+/** ComfyUI 工作流（本地/云端 HTTP API）
+ *  占位符（全部可选，模板里有就替换，没有就跳过）：
+  - {{prompt}}    正向提示词（JSON 转义防破）
+  - {{negative}}  负向提示词（无则空串）
+  - {{width}} {{height}} 出图尺寸（默认 768×768）
+  - {{seed}}      随机种子（每次任务随机）
+  - {{n}}         生成数量 batch_size（默认 1）
+ *  本地默认走 comfyui_local_url；云端走 comfyui_cloud_url；都空则返回 needs_key。 */
 async function submitComfyUI(job: ImageJob): Promise<EngineReply> {
-  const url = getSetting("comfyui_local_url");
-  const wf = getSetting("comfyui_workflow");
-  if (!wf) return { ok: false, engine: "comfyui", status: "reserved", message: "ComfyUI 接口已预留：在设置页填 workflow JSON 模板后启用" };
-  const workflow = JSON.parse(wf.replaceAll("{{prompt}}", job.prompt));
-  const res = await fetch(`${url}/prompt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: workflow }),
-  });
-  if (!res.ok) return { ok: false, engine: "comfyui", status: "error", message: `ComfyUI ${res.status}` };
-  const data = await res.json();
-  return { ok: true, engine: "comfyui", status: "submitted", engineTaskId: data?.prompt_id };
+  const localUrl = getSetting("comfyui_local_url");
+  const cloudUrl = getSetting("comfyui_cloud_url");
+  const wfTpl = getSetting("comfyui_workflow");
+  const url = cloudUrl || localUrl;
+  if (!url) return { ok: false, engine: "comfyui", status: "needs_key", message: "未配置 ComfyUI 地址（设置页 comfyui_local_url 或 comfyui_cloud_url）" };
+  if (!wfTpl) return { ok: false, engine: "comfyui", status: "needs_key", message: "未配置 ComfyUI workflow 模板（设置页 comfyui_workflow 粘贴一份 Save (API Format) 的 JSON）" };
+
+  // 占位符替换：数值占位符直接替换，字符串占位符做 JSON 转义防破
+  const esc = (s: string) => JSON.stringify(s).slice(1, -1); // 去掉外层引号，留内部内容
+  const seed = Math.floor(Math.random() * 2147483647);
+  const w = job.width || 768;
+  const h = job.height || 768;
+  const n = Math.min(job.n || 1, 4);
+  const wfJson = wfTpl
+    .replaceAll("{{width}}", String(w))
+    .replaceAll("{{height}}", String(h))
+    .replaceAll("{{seed}}", String(seed))
+    .replaceAll("{{n}}", String(n))
+    .replaceAll("{{prompt}}", esc(job.prompt || ""))
+    .replaceAll("{{negative}}", esc(job.negative || ""));
+  let workflow: unknown;
+  try { workflow = JSON.parse(wfJson); } catch (e) {
+    return { ok: false, engine: "comfyui", status: "error", message: `workflow JSON 解析失败（占位符替换后）：${(e as Error).message.slice(0, 160)}` };
+  }
+
+  try {
+    const res = await fetch(`${url.replace(/\/$/, "")}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: workflow, client_id: `wb-${Date.now()}` }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return { ok: false, engine: "comfyui", status: "error", message: `ComfyUI ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    const data = await res.json();
+    const pid = data?.prompt_id || data?.data?.prompt_id;
+    if (!pid) return { ok: false, engine: "comfyui", status: "error", message: "ComfyUI 未返回 prompt_id（响应异常）" };
+    return { ok: true, engine: "comfyui", status: "submitted", engineTaskId: String(pid) };
+  } catch (e) {
+    return { ok: false, engine: "comfyui", status: "error", message: `ComfyUI 提交: ${(e as Error).message.slice(0, 160)}` };
+  }
 }
 
 /** ComfyUI 轮询：/history/{prompt_id} 取输出图，拼 /view 下载地址 */
 export async function pollComfyUI(promptId: string): Promise<{ status: string; images?: string[]; message?: string }> {
-  const url = getSetting("comfyui_local_url") || getSetting("comfyui_cloud_url");
+  const url = (getSetting("comfyui_cloud_url") || getSetting("comfyui_local_url"))?.replace(/\/$/, "");
   if (!url) return { status: "error", message: "未配置 ComfyUI 地址" };
-  const res = await fetch(`${url}/history/${promptId}`);
-  if (!res.ok) return { status: "processing" };
-  const h = await res.json();
-  const item = h?.[promptId];
-  if (!item) return { status: "processing" };
-  if (item.status?.status_str === "error") return { status: "failed", message: "ComfyUI 执行出错" };
-  const images: string[] = [];
-  const outs = Object.values(item.outputs || {}) as { images?: { filename: string; subfolder?: string; type?: string }[] }[];
-  for (const out of outs) {
-    for (const img of out.images || []) {
-      images.push(`${url}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`);
+  try {
+    const res = await fetch(`${url}/history/${promptId}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { status: "processing" };
+    const h = await res.json();
+    const item = h?.[promptId];
+    if (!item) return { status: "processing" };
+    if (item.status?.status_str === "error") return { status: "failed", message: "ComfyUI 执行出错" };
+    const images: string[] = [];
+    const outs = Object.values(item.outputs || {}) as { images?: { filename: string; subfolder?: string; type?: string }[] }[];
+    for (const out of outs) {
+      for (const img of out.images || []) {
+        images.push(`${url}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`);
+      }
     }
+    return images.length ? { status: "done", images } : { status: "processing" };
+  } catch (e) {
+    return { status: "error", message: `ComfyUI 轮询: ${(e as Error).message.slice(0, 120)}` };
   }
-  return images.length ? { status: "done", images } : { status: "processing" };
 }
 
 function ratioOf(w?: number, h?: number): string {

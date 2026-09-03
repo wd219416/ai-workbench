@@ -132,8 +132,8 @@ export async function POST(req: Request) {
       }
     }
     case "comfyui": {
-      const url = val("comfyui_local_url");
-      if (!url) return NextResponse.json({ ok: false, message: "未填写地址（ComfyUI 为预留项）" });
+      const url = (val("comfyui_cloud_url") || val("comfyui_local_url")).replace(/\/$/, "");
+      if (!url) return NextResponse.json({ ok: false, message: "未填写本地或云端地址" });
       return NextResponse.json(await ping(`${url}/system_stats`));
     }
     default:

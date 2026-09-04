@@ -1,116 +1,101 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
-import { get, run, all } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { liblibFetchModel } from "@/lib/engines/liblib";
 
-// GET /api/liblib/models[?kind=lora][&style=产品]
+/** 解析 Liblib 商业授权字段：commercialUse 是数字 0/1/2/3 枚举 → commercial / member_only / unknown / forbidden */
+function parseLicense(cu: unknown): string {
+  if (cu === 1 || cu === "1") return "commercial";
+  if (cu === 2 || cu === "2") return "member_only";
+  if (cu === 3 || cu === "3") return "forbidden";
+  return "unknown";
+}
+
 export async function GET(req: Request) {
   const u = await currentUser();
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
-  const { searchParams } = new URL(req.url);
-  const kind = searchParams.get("kind") || "";
-  const style = searchParams.get("style") || "";
-  let sql = "SELECT * FROM liblib_models WHERE 1=1";
-  const params: unknown[] = [];
-  if (kind) { sql += " AND kind=?"; params.push(kind); }
-  if (style) { sql += " AND style=?"; params.push(style); }
-  sql += " ORDER BY created_at DESC";
-  return NextResponse.json(all(sql, ...params));
+  const url = new URL(req.url);
+  const kind = url.searchParams.get("kind");
+  const style = url.searchParams.get("style");
+  const db = getDb();
+  const wheres: string[] = [];
+  const args: (string | number | null)[] = [];
+  if (kind) { wheres.push("kind=?"); args.push(kind); }
+  if (style) { wheres.push("style=?"); args.push(style); }
+  const sql = "SELECT * FROM liblib_models" + (wheres.length ? " WHERE " + wheres.join(" AND ") : "") + " ORDER BY id DESC";
+  const rows = db.prepare(sql).all(...args);
+  return NextResponse.json(rows);
 }
 
-// POST /api/liblib/models
-// body: { versionUuid, name?, kind?, style?, weight?, note?, businessLineId?, fetch? }
 export async function POST(req: Request) {
   const u = await currentUser();
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
   const body = await req.json();
-  const versionUuid = String(body.versionUuid || "").trim();
+  const { versionUuid, kind, weight, style, note, business_line_id, fetch: autoFetch } = body as {
+    versionUuid?: string; kind?: string; weight?: number; style?: string;
+    note?: string; business_line_id?: number; fetch?: boolean;
+  };
   if (!versionUuid) return NextResponse.json({ error: "缺 versionUuid" }, { status: 400 });
+  const db = getDb();
+  const exist = db.prepare("SELECT id FROM liblib_models WHERE version_uuid=?").get(versionUuid);
+  if (exist) return NextResponse.json({ error: "该 versionUuid 已收藏", id: (exist as { id: number }).id }, { status: 409 });
 
-  let name = String(body.name || "").trim();
-  let kind = String(body.kind || "lora").trim().toLowerCase();
-  let style = String(body.style || "").trim();
+  // 默认元数据
+  let model: Awaited<ReturnType<typeof liblibFetchModel>> = {};
+  let name = kind === "checkpoint" ? "Checkpoint" : "LoRA";
   let baseAlgo = "";
-  let license = String(body.license || "").trim().toLowerCase() || "unknown";
+  let license = "unknown";
   let modelUrl = "";
-
-  if (body.fetch !== false && !name) {
+  if (autoFetch) {
     try {
-      const info = await liblibFetchModel(versionUuid);
-      name = name || info.modelName || info.versionName || versionUuid;
-      // baseAlgo 是数字枚举，优先存可读的 baseAlgoName（如"基础算法 v1.5"）
-      baseAlgo = info.baseAlgoName || String(info.baseAlgo ?? "");
-      if (!license || license === "unknown") license = parseLicense(info.commercialUse);
-      modelUrl = info.modelUrl || "";
+      model = await liblibFetchModel(versionUuid);
+      name = model.modelName || model.versionName || name;
+      baseAlgo = model.baseAlgoName || String(model.baseAlgo || "");
+      license = parseLicense(model.commercialUse);
+      modelUrl = model.modelUrl || "";
     } catch (e) {
-      return NextResponse.json({ error: `拉取模型信息失败: ${(e as Error).message}` }, { status: 502 });
+      return NextResponse.json({ error: "拉取模型详情失败：" + (e as Error).message.slice(0, 160) }, { status: 502 });
     }
   }
-  if (!name) name = versionUuid;
-
-  const weight = Number(body.weight) || 0.6;
-  const note = String(body.note || "");
-  const businessLineId = body.businessLineId ? Number(body.businessLineId) : null;
-
-  try {
-    const r = run(
-      "INSERT INTO liblib_models(version_uuid,model_id,name,kind,style,base_algo,license,weight,model_url,note,business_line_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-      versionUuid, "", name, kind, style, baseAlgo, license, weight, modelUrl, note, businessLineId
-    );
-    return NextResponse.json(get("SELECT * FROM liblib_models WHERE id=?", Number(r.lastInsertRowid)));
-  } catch (e) {
-    const msg = (e as Error).message;
-    if (msg.includes("UNIQUE constraint failed")) {
-      return NextResponse.json({ error: "该 versionUuid 已收藏" }, { status: 409 });
-    }
-    throw e;
-  }
+  const stmt = db.prepare(`INSERT INTO liblib_models(version_uuid,model_id,name,kind,style,base_algo,license,weight,model_url,note,business_line_id,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))`);
+  const r = stmt.run(
+    versionUuid,
+    (model as { modelName?: string })?.modelName || versionUuid.slice(0, 12),
+    name, kind || "lora", style || "", baseAlgo, license, weight ?? 0.7, modelUrl, note || "", business_line_id || null
+  );
+  return NextResponse.json({ ok: true, id: r.lastInsertRowid });
 }
 
-// PUT /api/liblib/models
 export async function PUT(req: Request) {
   const u = await currentUser();
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
   const body = await req.json();
-  const id = Number(body.id);
+  const { id, weight, style, note, business_line_id, name } = body as Record<string, unknown>;
   if (!id) return NextResponse.json({ error: "缺 id" }, { status: 400 });
-  const existing = get("SELECT id FROM liblib_models WHERE id=?", id);
-  if (!existing) return NextResponse.json({ error: "模型不存在" }, { status: 404 });
-
+  const db = getDb();
   const fields: string[] = [];
-  const values: unknown[] = [];
-  const add = (k: string, v: unknown) => {
-    if (v !== undefined) { fields.push(`${k}=?`); values.push(v); }
-  };
-  add("name", body.name);
-  add("kind", body.kind);
-  add("style", body.style);
-  add("license", body.license);
-  add("weight", body.weight);
-  add("note", body.note);
-  add("business_line_id", body.businessLineId);
-  if (!fields.length) return NextResponse.json({ error: "无更新内容" }, { status: 400 });
-  values.push(id);
-  run(`UPDATE liblib_models SET ${fields.join(",")} WHERE id=?`, ...values);
-  return NextResponse.json(get("SELECT * FROM liblib_models WHERE id=?", id));
+  const args: (string | number | null)[] = [];
+  if (weight !== undefined) { fields.push("weight=?"); args.push(Number(weight)); }
+  if (style !== undefined) { fields.push("style=?"); args.push(String(style)); }
+  if (note !== undefined) { fields.push("note=?"); args.push(String(note)); }
+  if (business_line_id !== undefined) { fields.push("business_line_id=?"); args.push(business_line_id ? Number(business_line_id) : null); }
+  if (name !== undefined) { fields.push("name=?"); args.push(String(name)); }
+  if (!fields.length) return NextResponse.json({ error: "无字段可更新" }, { status: 400 });
+  args.push(Number(id));
+  const r = db.prepare(`UPDATE liblib_models SET ${fields.join(",")} WHERE id=?`).run(...args);
+  if (r.changes === 0) return NextResponse.json({ error: "记录不存在" }, { status: 404 });
+  return NextResponse.json({ ok: true });
 }
 
-// DELETE /api/liblib/models
 export async function DELETE(req: Request) {
   const u = await currentUser();
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
-  const body = await req.json();
-  const id = Number(body.id);
+  const url = new URL(req.url);
+  const id = Number(url.searchParams.get("id"));
   if (!id) return NextResponse.json({ error: "缺 id" }, { status: 400 });
-  run("DELETE FROM liblib_models WHERE id=?", id);
-  return NextResponse.json({ ok: true, deletedId: id });
-}
-
-function parseLicense(v?: string): string {
-  if (!v) return "unknown";
-  const s = String(v).toLowerCase();
-  if (s.includes("forbidden") || s.includes("禁商用") || s.includes("不可商用")) return "forbidden";
-  if (s.includes("member") || s.includes("会员")) return "member_only";
-  if (s.includes("commercial") || s.includes("可商用")) return "commercial";
-  return "unknown";
+  const db = getDb();
+  const r = db.prepare("DELETE FROM liblib_models WHERE id=?").run(id);
+  if (r.changes === 0) return NextResponse.json({ error: "记录不存在" }, { status: 404 });
+  return NextResponse.json({ ok: true });
 }

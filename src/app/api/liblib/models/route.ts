@@ -71,7 +71,7 @@ export async function PUT(req: Request) {
   const u = await currentUser();
   if (!u) return NextResponse.json({ error: "未登录" }, { status: 401 });
   const body = await req.json();
-  const { id, weight, style, note, business_line_id, name } = body as Record<string, unknown>;
+  const { id, weight, style, note, business_line_id, name, base_algo } = body as Record<string, unknown>;
   if (!id) return NextResponse.json({ error: "缺 id" }, { status: 400 });
   const db = getDb();
   const fields: string[] = [];
@@ -81,6 +81,7 @@ export async function PUT(req: Request) {
   if (note !== undefined) { fields.push("note=?"); args.push(String(note)); }
   if (business_line_id !== undefined) { fields.push("business_line_id=?"); args.push(business_line_id ? Number(business_line_id) : null); }
   if (name !== undefined) { fields.push("name=?"); args.push(String(name)); }
+  if (base_algo !== undefined) { fields.push("base_algo=?"); args.push(String(base_algo)); }
   if (!fields.length) return NextResponse.json({ error: "无字段可更新" }, { status: 400 });
   args.push(Number(id));
   const r = db.prepare(`UPDATE liblib_models SET ${fields.join(",")} WHERE id=?`).run(...args);

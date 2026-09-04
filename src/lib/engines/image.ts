@@ -200,21 +200,26 @@ async function liblibUpload(filePath: string): Promise<string> {
 
 /** 根据本地收藏的 Liblib 模型 id，组装 additionalNetwork / checkPointId。
  *  - LoRA 最多 5 个，超出的截断；禁商用(forbidden)模型跳过。
- *  - checkpoint 型模型作为底模 checkPointId（优先于设置页默认底模）。 */
+ *  - checkpoint 型模型作为底模 checkPointId（优先于设置页默认底模）。
+ *  - baseAlgo：所有 LoRA / checkpoint 的底模归一化（FLUX / SDXL / SD1.5 / V2 / Pony 等），
+ *    用于 submitLiblib 自动选择匹配的 webui 模板（SDXL 经典模板 / FLUX.1 ultra 模板）。 */
 function buildLiblibNetworks(ids?: number[]): {
   additionalNetwork?: { modelId: string; weight: number }[];
   checkPointId?: string;
+  baseAlgo?: string;
 } {
   if (!ids?.length) return {};
   const placeholders = ids.map(() => "?").join(",");
-  const rows = all<{ id: number; version_uuid: string; kind: string; weight: number; license: string; name: string }>(
-    `SELECT id, version_uuid, kind, weight, license, name FROM liblib_models WHERE id IN (${placeholders})`,
+  const rows = all<{ id: number; version_uuid: string; kind: string; weight: number; license: string; name: string; base_algo: string }>(
+    `SELECT id, version_uuid, kind, weight, license, name, base_algo FROM liblib_models WHERE id IN (${placeholders})`,
     ...ids
   );
   const additionalNetwork: { modelId: string; weight: number }[] = [];
   let checkPointId = "";
+  const baseAlgos: string[] = [];
   for (const r of rows) {
     if (r.license === "forbidden") continue;
+    if (r.base_algo) baseAlgos.push(r.base_algo);
     if (r.kind === "checkpoint") {
       if (!checkPointId) checkPointId = r.version_uuid;
     } else {
@@ -222,9 +227,11 @@ function buildLiblibNetworks(ids?: number[]): {
     }
   }
   if (additionalNetwork.length > 5) additionalNetwork.length = 5;
+  // 底模归一化：取第一个 LoRA/checkpoint 的 baseAlgo（多 LoRA 应保持同底模）
   return {
     additionalNetwork: additionalNetwork.length ? additionalNetwork : undefined,
     checkPointId: checkPointId || undefined,
+    baseAlgo: baseAlgos[0] || undefined,
   };
 }
 
@@ -237,18 +244,28 @@ async function submitLiblib(job: ImageJob): Promise<EngineReply> {
 
   // 有参考图 → 图生图；否则文生图
   const isI2i = !!job.refImagePath && fs.existsSync(job.refImagePath);
+  // 底模归一化：FLUX.1 / F.1 → ultra 模板；其它 → SDXL 经典模板
+  const algo = (nets.baseAlgo || "").toUpperCase();
+  const isFlux = algo.includes("FLUX") || algo === "F.1" || algo === "F1";
   const path = isI2i ? "/api/generate/webui/img2img" : "/api/generate/webui/text2img";
   const q = new URLSearchParams(liblibSign(path, ak, sk)).toString();
+  // 模板 UUID：SDXL 经典 (e10adc.../9c7d531d...) vs FLUX.1 ultra (5d7e6700.../07e00af4...)
+  // 可在设置页通过 liblib_template / liblib_i2i_template 覆盖；FLUX 系列用独立 key 防止误改
   const templateUuid = isI2i
-    ? getSetting("liblib_i2i_template") || "9c7d531dc75f476aa833b3d452b8f7ad"
-    : getSetting("liblib_template") || "e10adc3949ba59abbe56e057f20f883e";
+    ? isFlux
+      ? getSetting("liblib_i2i_template_flux") || "07e00af4fc464c7ab55ff906f8acf1b7"
+      : getSetting("liblib_i2i_template") || "9c7d531dc75f476aa833b3d452b8f7ad"
+    : isFlux
+      ? getSetting("liblib_template_flux") || "5d7e67009b344550bc1aa6ccbfa1d7f4"
+      : getSetting("liblib_template") || "e10adc3949ba59abbe56e057f20f883e";
 
   const gp: Record<string, unknown> = {
     prompt: job.prompt,
     width: clamp(job.width),
     height: clamp(job.height),
-    steps: 20,
-    cfgScale: 7,
+    // FLUX.1 ultra 推荐 cfgScale=3~3.5 / steps=25；SDXL 经典 cfgScale=7 / steps=20
+    steps: isFlux ? 25 : 20,
+    cfgScale: isFlux ? 3.5 : 7,
     seed: -1,
     imgCount: Math.min(job.n || 1, 4),
   };
